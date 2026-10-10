@@ -48,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--approve", choices=("ask", "auto"), default="ask",
                        help="multi mode: pause for spec approval (ask) or "
                             "proceed without review (auto)")
+    build.add_argument("--repair", type=int, default=2, metavar="N",
+                       help="multi mode: up to N reconciliation rounds when "
+                            "the gates fail (0 disables). Each round "
+                            "diagnoses code/test/spec defect, patches that "
+                            "artefact, and re-runs every gate")
     build.add_argument("--spec", type=Path, default=None,
                        help="multi mode: use this spec.json instead of "
                             "generating one (skips the Spec agent)")
@@ -84,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="comma-separated gate ids to skip, e.g. G4 "
                             "(much faster, weaker verdict)")
     bench.add_argument("--max-mutants", type=int, default=None)
+    bench.add_argument("--repair", type=int, default=0, metavar="N",
+                       help="multi mode: reconciliation rounds per task "
+                            "(default 0, so the loop's effect is an explicit "
+                            "ablation and not mixed into the base result)")
     bench.add_argument("--mode", choices=("single", "multi"), default="single",
                        help="single: one agent writes code and tests. multi: "
                             "independent implementer and test author, spec "
@@ -201,6 +210,7 @@ def _build(args: argparse.Namespace) -> int:
         result = pipeline.build(
             args.requirement, args.out,
             mode=args.mode, spec=supplied_spec, approve=approver,
+            repair_rounds=args.repair if args.mode == "multi" else 0,
             clean=args.clean, verify=not args.no_verify,
         )
     except ProviderUnavailable as exc:
@@ -251,7 +261,8 @@ def _bench(args: argparse.Namespace) -> int:
         gate_config.thresholds.max_mutants = args.max_mutants
 
     try:
-        runner = BenchRunner(llm_config, gate_config, args.out, mode=args.mode)
+        runner = BenchRunner(llm_config, gate_config, args.out, mode=args.mode,
+                             repair_rounds=args.repair)
         outcomes = runner.run(tasks)
     except ProviderUnavailable as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -263,6 +274,7 @@ def _bench(args: argparse.Namespace) -> int:
     results = runner.out_dir / "results.json"
     write_results(outcomes, summary, results, meta={
         "mode": args.mode,
+        "repair_rounds": args.repair,
         "provider": args.provider,
         "disabled_gates": list(gate_config.disabled),
         "max_mutants": gate_config.thresholds.max_mutants,

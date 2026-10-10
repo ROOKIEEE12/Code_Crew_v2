@@ -1,6 +1,7 @@
 """The gate layer: deterministic checks that no agent may bypass."""
 
 from .base import Gate, GateContext
+from .conformance import ConformanceGate
 from .coverage import CoverageGate
 from .mutation import MutationGate
 from .properties import PropertyGate
@@ -16,6 +17,7 @@ __all__ = [
     "GATE_CLASSES",
     "all_gate_ids",
     "SyntaxGate",
+    "ConformanceGate",
     "TestGate",
     "CoverageGate",
     "SecurityGate",

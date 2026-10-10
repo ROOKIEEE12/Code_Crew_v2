@@ -65,6 +65,12 @@ class TaskOutcome:
     #: here is informative: implementer and test author disagreed, which
     #: means the spec was ambiguous or one of them was wrong.
     own_tests_passed: bool | None = None
+    #: Reconciliation rounds that ran, their verdicts, and whether the loop
+    #: changed the outcome. ``initial_verdict`` is the pre-repair verdict.
+    repair_rounds: int = 0
+    repair_verdicts: list[str] = field(default_factory=list)
+    repairs_accepted: int = 0
+    initial_verdict: str | None = None
 
     @property
     def classification(self) -> str:
@@ -148,11 +154,13 @@ class BenchRunner:
         gate_config: GateConfig | None = None,
         out_dir: Path | None = None,
         mode: str = "single",
+        repair_rounds: int = 0,
     ) -> None:
         self.llm_config = llm_config
         self.gate_config = gate_config or GateConfig()
         self.out_dir = (out_dir or Path("bench_runs")).resolve()
         self.mode = mode
+        self.repair_rounds = repair_rounds
 
     def run(self, tasks: list[Task], *, clean: bool = True) -> list[TaskOutcome]:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +182,8 @@ class BenchRunner:
         # The spec is auto-approved here: a benchmark cannot pause for a
         # human, and the approval checkpoint is evaluated separately.
         result = pipeline.build(task.requirement, workspace,
-                                mode=self.mode, clean=False)
+                                mode=self.mode,
+                                repair_rounds=self.repair_rounds, clean=False)
         return self._score(task, result)
 
     # -- internals -------------------------------------------------------------
@@ -193,6 +202,11 @@ class BenchRunner:
             contract_rejections=len(result.contract_rejections),
             failure=result.failure,
             mode=self.mode,
+            repair_rounds=len(result.repairs),
+            repair_verdicts=[s.verdict or "none" for s in result.repairs],
+            repairs_accepted=sum(1 for s in result.repairs
+                                 if s.outcome == "accepted"),
+            initial_verdict=result.initial_verdict,
             **_gate_metrics(result),
         )
         if result.submission is None:

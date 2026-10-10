@@ -38,6 +38,7 @@ from .agents import (
 from .config import WORK_DIR_NAME, GateConfig
 from .gates import GateRunner
 from .llm import LLMClient, LLMConfig
+from .repair import RepairLoop, RepairStep
 from .results import GateReport
 from .sandbox import Sandbox, get_sandbox
 from .trace import Tracer
@@ -84,6 +85,11 @@ class RunResult:
     contract_rejections: list[str] = field(default_factory=list)
     cost: dict = field(default_factory=dict)
     provider: str = ""
+    #: What the reconciliation loop did, in order.
+    repairs: list[RepairStep] = field(default_factory=list)
+    #: The verdict before any repair, so the loop's effect is measurable
+    #: and a repaired result is never presented as a first-try success.
+    initial_verdict: str | None = None
 
     @property
     def verdict(self) -> str:
@@ -127,6 +133,7 @@ class Pipeline:
         mode: str = "single",
         spec: Spec | None = None,
         approve: Approver | None = None,
+        repair_rounds: int = 0,
         clean: bool = False,
         verify: bool = True,
     ) -> RunResult:
@@ -188,14 +195,34 @@ class Pipeline:
                      paths=[f.path for f in submission.files])
 
         report = None
+        repairs: list[RepairStep] = []
+        initial_verdict = None
         if verify:
             sandbox = get_sandbox(workspace, self.gate_config.sandbox)
             report = self._verify(workspace, sandbox, tracer, run_id)
+            initial_verdict = report.verdict()
+
+            # Reconciliation needs a spec to arbitrate against, so it only
+            # runs in multi mode.
+            if repair_rounds > 0 and spec is not None and not report.passed:
+                loop = RepairLoop(
+                    client, tracer, workspace,
+                    lambda label: self._verify(
+                        workspace, sandbox, tracer, f"{run_id}-{label}"),
+                    approve=approve, max_rounds=repair_rounds,
+                )
+                repaired = loop.run(spec, submission, report)
+                submission, spec, report = (
+                    repaired.submission, repaired.spec, repaired.report)
+                repairs = repaired.steps
+                attempts += repaired.attempts
+                rejections += repaired.rejections
 
         tracer.event("run_end", outcome=report.verdict() if report else "not_verified")
         return finish(
             submission=submission, report=report, spec=spec,
             agent_attempts=attempts, contract_rejections=rejections,
+            repairs=repairs, initial_verdict=initial_verdict,
         )
 
     # -- multi-agent stages ----------------------------------------------------

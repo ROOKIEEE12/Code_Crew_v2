@@ -176,6 +176,21 @@ class CodeSubmission:
                     hint="Tests that never assert cannot fail, so they "
                          "verify nothing.",
                 )
+            surface = re.search(
+                rf"__all__|\bgetmembers\b|\b(?:dir|vars)\(\s*"
+                rf"(?:{re.escape(module)}|module|mod)\s*\)", file.content)
+            if surface:
+                # Observed in the Phase 2 benchmark: three of six failed
+                # workspaces asserted exactly which names a module exports.
+                # No spec states that, so such a test fails a correct
+                # implementation whenever it adds a helper.
+                raise ContractError(
+                    f"'{file.path}' asserts the module's public surface "
+                    f"({surface.group(0).strip()!r})",
+                    hint="Test behaviour the specification states. Which "
+                         "names a module happens to export is not part of "
+                         "any specification.",
+                )
         if not any(f.is_python for f in submission.files):
             raise ContractError("no Python test file was submitted")
         submission._check_syntax()
@@ -427,6 +442,183 @@ class Spec:
                 lines.extend(f"  - {item}" for item in items)
                 lines.append("")
         return "\n".join(lines).rstrip()
+
+
+# -- reconciliation: diagnosis and patches ---------------------------------------
+
+CODE_DEFECT = "code_defect"
+TEST_DEFECT = "test_defect"
+SPEC_DEFECT = "spec_defect"
+VERDICTS = (CODE_DEFECT, TEST_DEFECT, SPEC_DEFECT)
+
+
+@dataclass(frozen=True)
+class Diagnosis:
+    """Which artefact is wrong, decided against the spec.
+
+    The three-way verdict is the point. A repair loop that only knows "make
+    the tests pass" will happily bend correct code to satisfy a wrong test -
+    the classic failure of automated debugging. Here the spec is the
+    authority, and the Diagnostician must say whether the code, the tests or
+    the spec itself contradicts it.
+    """
+
+    verdict: str
+    root_cause: str
+    fix_instruction: str
+    #: The spec sentence or example this verdict rests on.
+    evidence: str
+    target_files: tuple[str, ...] = ()
+
+    @classmethod
+    def parse(cls, text: str, *, files: dict[str, str]) -> "Diagnosis":
+        payload = extract_json(text)
+        verdict = payload.get("verdict")
+        if verdict not in VERDICTS:
+            raise ContractError(
+                f"'verdict' must be one of {', '.join(VERDICTS)}, got {verdict!r}"
+            )
+        fields = {}
+        for key in ("root_cause", "fix_instruction", "evidence"):
+            value = payload.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ContractError(f"'{key}' must be a non-empty string")
+            fields[key] = value.strip()
+
+        raw_targets = payload.get("target_files") or []
+        if not isinstance(raw_targets, list) or not all(
+                isinstance(t, str) for t in raw_targets):
+            raise ContractError("'target_files' must be an array of paths")
+        targets = tuple(t.strip().replace("\\", "/") for t in raw_targets)
+
+        if verdict == SPEC_DEFECT:
+            targets = ()
+        else:
+            if not targets:
+                raise ContractError(
+                    f"a {verdict} must name the file(s) to change in "
+                    f"'target_files'"
+                )
+            unknown = [t for t in targets if t not in files]
+            if unknown:
+                raise ContractError(
+                    f"unknown file(s) in 'target_files': {', '.join(unknown)}",
+                    hint="Known files: " + ", ".join(sorted(files)),
+                )
+            wants_tests = verdict == TEST_DEFECT
+            wrong = [t for t in targets
+                     if SourceFile(t, "").is_test != wants_tests]
+            if wrong:
+                raise ContractError(
+                    f"a {verdict} must target "
+                    f"{'test' if wants_tests else 'implementation'} files, "
+                    f"but got: {', '.join(wrong)}"
+                )
+        return cls(verdict=verdict, target_files=targets, **fields)
+
+    def to_dict(self) -> dict:
+        return {
+            "verdict": self.verdict,
+            "root_cause": self.root_cause,
+            "fix_instruction": self.fix_instruction,
+            "evidence": self.evidence,
+            "target_files": list(self.target_files),
+        }
+
+
+def count_test_functions(source: str) -> int:
+    """Number of ``test*`` functions (including methods) in a module."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return 0
+    return sum(
+        1 for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    )
+
+
+def parse_patch(
+    text: str,
+    *,
+    allowed: set[str],
+    before: dict[str, str],
+    max_test_removals: int = 0,
+) -> dict[str, str]:
+    """Validate a patch: complete files, only the permitted ones.
+
+    Two guards exist because a repair loop is under pressure to turn the
+    verdict green by the cheapest route, and the cheapest route is deleting
+    the evidence: it may not touch files outside its brief, and a test patch
+    may not shrink the suite beyond the failures it was asked to fix.
+    """
+    payload = extract_json(text)
+    files = parse_file_list(payload)
+    paths = {f.path for f in files}
+
+    stray = sorted(paths - allowed)
+    if stray:
+        raise ContractError(
+            f"patch touches file(s) outside its brief: {', '.join(stray)}",
+            hint="You may only modify: " + ", ".join(sorted(allowed)),
+        )
+    missing = sorted(allowed - paths)
+    if missing:
+        raise ContractError(
+            f"patch omits file(s) it was asked to fix: {', '.join(missing)}",
+            hint="Return the COMPLETE new content of every listed file.",
+        )
+
+    for file in files:
+        if file.is_python:
+            try:
+                ast.parse(file.content)
+            except SyntaxError as exc:
+                raise ContractError(
+                    f"'{file.path}' is not valid Python: {exc.msg} at line "
+                    f"{exc.lineno}",
+                    hint="The response may have been cut off; return the "
+                         "whole file.",
+                ) from exc
+
+    test_paths = [f for f in files if f.is_test and f.is_python]
+    if test_paths:
+        old = sum(count_test_functions(before.get(f.path, "")) for f in test_paths)
+        new = sum(count_test_functions(f.content) for f in test_paths)
+        if new < 1:
+            raise ContractError("the patch leaves no test functions")
+        if old - new > max_test_removals:
+            raise ContractError(
+                f"the patch removes {old - new} test function(s) but only "
+                f"{max_test_removals} failing test(s) were diagnosed",
+                hint="Do not delete tests to make the suite pass. Correct "
+                     "the wrong expectation instead, so the test still "
+                     "checks the behaviour the specification states.",
+            )
+    return {f.path: f.content for f in files}
+
+
+def parse_spec_repair(text: str, *, original: Spec) -> Spec:
+    """A corrected spec may fix rules and examples, never rename the API."""
+    fixed = Spec.parse(text)
+    if fixed.module != original.module:
+        raise ContractError(
+            f"the module name changed from '{original.module}' to "
+            f"'{fixed.module}'",
+            hint="Keep the module name; renaming is a requirements change "
+                 "that a person must decide.",
+        )
+    before = {f.name for f in original.functions}
+    after = {f.name for f in fixed.functions}
+    if before != after:
+        raise ContractError(
+            f"the set of functions changed: removed {sorted(before - after)}, "
+            f"added {sorted(after - before)}",
+            hint="Correct rules and examples only. Adding or removing "
+                 "functions is a requirements change.",
+        )
+    return fixed
 
 
 def _parse_function(raw: dict, index: int) -> FunctionSpec:

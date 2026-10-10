@@ -110,6 +110,14 @@ class Gate(abc.ABC):
     #: not hide every other problem from the Diagnostician.
     depends_on: tuple[str, ...] = ()
 
+    def applicable(self, ctx: GateContext) -> bool:
+        """Whether this gate has anything to say about this workspace.
+
+        Distinct from a skip: a skipped gate is *unverified*, a gate that
+        does not apply simply is not part of the run.
+        """
+        return True
+
     def precondition(self, ctx: GateContext) -> str | None:
         """Return a skip reason, or None when the gate can run."""
         if self.requires_module and not ctx.sandbox.has_module(self.requires_module):

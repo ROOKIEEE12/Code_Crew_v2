@@ -10,6 +10,7 @@ from ..config import WORK_DIR_NAME, GateConfig
 from ..results import GateReport, GateResult, Status
 from ..sandbox import Sandbox, get_sandbox
 from .base import Gate, GateContext
+from .conformance import ConformanceGate
 from .coverage import CoverageGate
 from .mutation import MutationGate
 from .properties import PropertyGate
@@ -21,6 +22,7 @@ from .tests import TestGate
 #: failing patch gets feedback in seconds rather than minutes.
 GATE_CLASSES: tuple[type[Gate], ...] = (
     SyntaxGate,
+    ConformanceGate,
     TestGate,
     CoverageGate,
     SecurityGate,
@@ -64,6 +66,8 @@ class GateRunner:
             gate_id = gate.gate_id
 
             if only and gate_id not in only:
+                continue
+            if not gate.applicable(ctx):
                 continue
             if not self.config.is_enabled(gate_id):
                 report.results.append(_disabled(gate, self.config))

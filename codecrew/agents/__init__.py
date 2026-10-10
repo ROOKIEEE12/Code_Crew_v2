@@ -5,6 +5,7 @@ from .coder import CoderAgent
 from .contracts import (
     CodeSubmission,
     ContractError,
+    Diagnosis,
     Example,
     FunctionSpec,
     SourceFile,
@@ -12,7 +13,9 @@ from .contracts import (
     extract_json,
     parse_file_list,
 )
+from .diagnostician import DiagnosticianAgent
 from .implementer import ImplementerAgent
+from .patcher import PatcherAgent, SpecRepairAgent
 from .spec_agent import SpecAgent
 from .tester import TestAuthorAgent
 
@@ -22,11 +25,15 @@ __all__ = [
     "AgentFailure",
     "ContextViolation",
     "CoderAgent",
+    "DiagnosticianAgent",
+    "PatcherAgent",
+    "SpecRepairAgent",
     "SpecAgent",
     "ImplementerAgent",
     "TestAuthorAgent",
     "CodeSubmission",
     "ContractError",
+    "Diagnosis",
     "Example",
     "FunctionSpec",
     "SourceFile",

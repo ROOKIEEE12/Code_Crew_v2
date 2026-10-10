@@ -37,6 +37,13 @@ bounds, agreement between functions), add a Hypothesis property test using \
 bounded (e.g. `st.text(max_size=40)`, `st.integers(-1000, 1000)`).
 - Include invalid-type and degenerate inputs only where the specification \
 says how they must behave.
+- Never assert which names a module exports (`dir(module)`, `__all__`); no \
+specification states that.
+- In Hypothesis tests, exclude inputs the specification says must raise (use \
+`hypothesis.assume(...)` or a filtered strategy). Do not generate a zero \
+divisor for a function that must raise on one, then expect a number.
+- Do not use symlinks, sockets, the network or anything that needs special \
+privileges; the tests run on arbitrary machines.
 - Import the module under test as `from <module> import ...`.
 
 Reply with a single JSON object and nothing else:

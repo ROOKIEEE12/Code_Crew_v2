@@ -124,6 +124,23 @@ def render_run(result, *, isolation: str | None = None) -> str:
             lines += ["", "  approach: " + "\n            ".join(
                 _wrap(result.submission.notes, _WIDTH - 14))]
 
+    repairs = getattr(result, "repairs", [])
+    if repairs:
+        initial = getattr(result, "initial_verdict", None)
+        lines += ["", "-" * _WIDTH, "RECONCILIATION LOG", "-" * _WIDTH,
+                  f"  before repair : {initial}",
+                  f"  after repair  : {result.verdict}"]
+        for step in repairs:
+            verdict = step.verdict or "no diagnosis"
+            lines.append(f"  round {step.round}: {verdict:12} -> {step.outcome}")
+            if step.instruction:
+                for chunk in _wrap(step.instruction, _WIDTH - 12):
+                    lines.append("      " + chunk)
+            if step.note:
+                lines.append(f"      ({step.note})")
+        lines.append("  A repaired result is shown with its pre-repair verdict "
+                     "so it is never mistaken for a first-try success.")
+
     if result.report is not None:
         lines += ["", render(result.report, isolation=isolation)]
 
