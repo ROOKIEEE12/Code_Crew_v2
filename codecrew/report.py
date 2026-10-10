@@ -1,0 +1,131 @@
+"""Human-readable rendering of a gate report.
+
+This is the product surface, not a debug dump. Two rules it must keep:
+
+* every claim traces to an evidence file on disk;
+* what was *not* verified is as prominent as what passed, because a skipped
+  gate silently rendered as green is exactly the false confidence this
+  project exists to remove.
+"""
+
+from __future__ import annotations
+
+from .results import GateReport, Severity, Status
+
+_MARK = {
+    Status.PASS: "[PASS]",
+    Status.FAIL: "[FAIL]",
+    Status.SKIP: "[SKIP]",
+    Status.ERROR: "[ERR ]",
+}
+
+_WIDTH = 74
+
+
+def render(report: GateReport, *, show_findings: bool = True,
+           max_findings: int = 8, isolation: str | None = None) -> str:
+    lines: list[str] = []
+    rule = "=" * _WIDTH
+
+    lines += [rule, "CODECREW VERIFICATION REPORT", rule]
+    lines += [
+        f"workspace : {report.workspace}",
+        f"run id    : {report.run_id}",
+        f"sandbox   : {report.sandbox}",
+        f"duration  : {report.duration_s:.1f}s",
+        "",
+        f"VERDICT   : {report.verdict()}",
+        "",
+        "-" * _WIDTH,
+        "GATES",
+        "-" * _WIDTH,
+    ]
+
+    for result in report.results:
+        mark = _MARK[result.status]
+        flag = "" if result.blocking else "  (non-blocking)"
+        lines.append(f"{mark} {result.gate_id}  {result.name}: {result.summary}{flag}")
+        if result.note:
+            lines.append(f"       note: {result.note}")
+        if result.evidence:
+            lines.append(f"       evidence: {result.evidence}")
+
+    if show_findings:
+        findings_section = _findings(report, max_findings)
+        if findings_section:
+            lines += ["", "-" * _WIDTH, "FINDINGS", "-" * _WIDTH, *findings_section]
+
+    not_verified = _not_verified(report)
+    lines += ["", "-" * _WIDTH, "WHAT WAS NOT VERIFIED", "-" * _WIDTH]
+    lines += not_verified or ["  Nothing: every gate ran and reported a result."]
+
+    if isolation:
+        lines += ["", "-" * _WIDTH, "EXECUTION ISOLATION", "-" * _WIDTH,
+                  "  " + isolation]
+
+    counts = report.counts()
+    lines += [
+        "",
+        rule,
+        f"pass {counts['PASS']}   fail {counts['FAIL']}   "
+        f"skip {counts['SKIP']}   error {counts['ERROR']}",
+        rule,
+    ]
+    return "\n".join(lines)
+
+
+def _findings(report: GateReport, max_findings: int) -> list[str]:
+    lines: list[str] = []
+    for result in report.results:
+        if not result.findings:
+            continue
+        shown = sorted(result.findings, key=lambda f: -f.severity.rank)
+        lines.append(f"  {result.gate_id} {result.name}:")
+        for finding in shown[:max_findings]:
+            lines.append(
+                f"    [{finding.severity.value:8}] {finding.location()}  "
+                f"{finding.code}"
+            )
+            for chunk in _wrap(finding.message, _WIDTH - 8):
+                lines.append(f"        {chunk}")
+        if len(shown) > max_findings:
+            lines.append(f"    ... and {len(shown) - max_findings} more "
+                         f"(see {result.evidence or 'evidence directory'})")
+    return lines
+
+
+def _not_verified(report: GateReport) -> list[str]:
+    """The honesty section: unresolved gaps, stated plainly."""
+    lines: list[str] = []
+    for result in report.skipped:
+        reason = result.note or "no reason recorded"
+        lines.append(f"  {result.gate_id} {result.name} did not run - {reason}")
+    for result in report.results:
+        if result.status is Status.ERROR:
+            lines.append(
+                f"  {result.gate_id} {result.name} could not complete - "
+                f"{result.note or result.summary}"
+            )
+    low = [
+        f for result in report.results for f in result.findings
+        if f.severity.rank < Severity.MEDIUM.rank
+    ]
+    if low:
+        lines.append(f"  {len(low)} informational finding(s) were recorded but "
+                     f"did not affect the verdict.")
+    return lines
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    lines, current = [], words[0]
+    for word in words[1:]:
+        if len(current) + len(word) + 1 <= width:
+            current += " " + word
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines

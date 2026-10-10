@@ -1,0 +1,26 @@
+[project]
+name = "codecrew"
+version = "0.1.0"
+description = "A verification pipeline that happens to use AI to write the code"
+requires-python = ">=3.10"
+# The gate layer is deliberately stdlib-only: it is the component that judges
+# everything else, so it must run with a bare Python install. Tools used by
+# the gates are pinned in codecrew/config.py and installed into the sandbox,
+# not into this project's environment.
+dependencies = []
+
+[project.optional-dependencies]
+# For running CodeCrew's own test suite on a machine without the sandbox.
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
