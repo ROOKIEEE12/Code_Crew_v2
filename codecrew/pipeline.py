@@ -22,15 +22,18 @@ from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
 from .agents import (
     AgentFailure,
+    ArchitectAgent,
     CoderAgent,
     CodeSubmission,
     ImplementerAgent,
+    ProjectPlan,
+    SourceFile,
     SpecAgent,
     Spec,
     TestAuthorAgent,
@@ -66,6 +69,9 @@ SPEC_FILE = "spec.json"
 #: (possibly edited), or ``None`` to reject it and stop.
 Approver = Callable[[Spec], "Spec | None"]
 
+#: The same, for the architect's project plan.
+PlanApprover = Callable[[ProjectPlan], "ProjectPlan | None"]
+
 
 @dataclass
 class RunResult:
@@ -90,6 +96,9 @@ class RunResult:
     #: The verdict before any repair, so the loop's effect is measurable
     #: and a repaired result is never presented as a first-try success.
     initial_verdict: str | None = None
+    #: Project mode: the architect's plan and one spec per module.
+    plan: ProjectPlan | None = None
+    specs: dict[str, Spec] = field(default_factory=dict)
 
     @property
     def verdict(self) -> str:
@@ -132,13 +141,16 @@ class Pipeline:
         *,
         mode: str = "single",
         spec: Spec | None = None,
+        plan: ProjectPlan | None = None,
         approve: Approver | None = None,
+        approve_plan: PlanApprover | None = None,
         repair_rounds: int = 0,
         clean: bool = False,
         verify: bool = True,
     ) -> RunResult:
-        if mode not in ("single", "multi"):
-            raise ValueError(f"unknown mode {mode!r}; use 'single' or 'multi'")
+        if mode not in ("single", "multi", "project"):
+            raise ValueError(
+                f"unknown mode {mode!r}; use 'single', 'multi' or 'project'")
 
         started = time.monotonic()
         workspace = workspace.resolve()
@@ -166,6 +178,7 @@ class Pipeline:
 
         attempts = 0
         rejections: list[str] = []
+        specs: dict[str, Spec] = {}
 
         try:
             if mode == "single":
@@ -174,6 +187,16 @@ class Pipeline:
                 submission = result.output
                 attempts += result.attempts
                 rejections += result.rejections
+            elif mode == "project":
+                outcome = self._build_project(
+                    client, tracer, requirement, workspace, plan,
+                    approve_plan, approve)
+                if isinstance(outcome, str):
+                    tracer.event("run_end", outcome="plan_rejected", reason=outcome)
+                    return finish(submission=None, report=None, failure=outcome,
+                                  spec=None, agent_attempts=attempts,
+                                  contract_rejections=rejections)
+                submission, specs, plan, attempts, rejections = outcome
             else:
                 outcome = self._build_multi(
                     client, tracer, requirement, workspace, spec, approve)
@@ -203,17 +226,30 @@ class Pipeline:
             initial_verdict = report.verdict()
 
             # Reconciliation needs a spec to arbitrate against, so it only
-            # runs in multi mode.
-            if repair_rounds > 0 and spec is not None and not report.passed:
+            # runs when there is one. A project has one per module; the
+            # loop works on the module the failing findings point at.
+            if repair_rounds > 0 and not report.passed and (spec or specs):
+                owner = None
+                spec_path = None
+                target = spec
+                if specs:
+                    owner = owner_module(report, list(specs))
+                    target = specs[owner]
+                    spec_path = workspace / WORK_DIR_NAME / "specs" / f"{owner}.json"
+                    tracer.event("repair_owner", module=owner)
                 loop = RepairLoop(
                     client, tracer, workspace,
                     lambda label: self._verify(
                         workspace, sandbox, tracer, f"{run_id}-{label}"),
                     approve=approve, max_rounds=repair_rounds,
+                    spec_path=spec_path,
                 )
-                repaired = loop.run(spec, submission, report)
-                submission, spec, report = (
-                    repaired.submission, repaired.spec, repaired.report)
+                repaired = loop.run(target, submission, report)
+                submission, report = repaired.submission, repaired.report
+                if owner is not None:
+                    specs[owner] = repaired.spec
+                else:
+                    spec = repaired.spec
                 repairs = repaired.steps
                 attempts += repaired.attempts
                 rejections += repaired.rejections
@@ -223,7 +259,187 @@ class Pipeline:
             submission=submission, report=report, spec=spec,
             agent_attempts=attempts, contract_rejections=rejections,
             repairs=repairs, initial_verdict=initial_verdict,
+            plan=plan, specs=specs,
         )
+
+    def repair(
+        self,
+        workspace: Path,
+        *,
+        rounds: int = 2,
+        approve: Approver | None = None,
+    ) -> RunResult:
+        """Run the gates and the reconciliation loop on an existing workspace.
+
+        Generation is not repeated, so this isolates the loop's effect: the
+        same artefacts, before and after. It is also what a user wants after
+        editing a generated project by hand.
+        """
+        from .gates.base import EXCLUDED_DIRS
+
+        started = time.monotonic()
+        workspace = workspace.resolve()
+        spec_path = workspace / WORK_DIR_NAME / SPEC_FILE
+        if not spec_path.exists():
+            raise FileNotFoundError(
+                f"{spec_path} not found: the loop arbitrates against a spec, "
+                f"so only workspaces built in multi mode can be repaired")
+        spec = Spec.parse(spec_path.read_text(encoding="utf-8"))
+
+        files = []
+        for path in sorted(workspace.rglob("*.py")):
+            rel = path.relative_to(workspace)
+            if any(part in EXCLUDED_DIRS for part in rel.parts):
+                continue
+            if rel.name == "conftest.py":
+                continue
+            files.append(SourceFile(rel.as_posix(),
+                                    path.read_text(encoding="utf-8")))
+        submission = CodeSubmission(files=files)
+
+        run_id = time.strftime("%Y%m%d-%H%M%S") + "-repair"
+        tracer = self._tracer or Tracer(
+            workspace / WORK_DIR_NAME / "traces" / f"{run_id}.jsonl",
+            run_id=run_id)
+        client = LLMClient(self.llm_config, tracer=tracer)
+        tracer.event("repair_start", workspace=str(workspace), rounds=rounds)
+
+        sandbox = get_sandbox(workspace, self.gate_config.sandbox)
+        report = self._verify(workspace, sandbox, tracer, run_id)
+        initial = report.verdict()
+        repairs: list[RepairStep] = []
+        attempts, rejections = 0, []
+
+        if rounds > 0 and not report.passed:
+            loop = RepairLoop(
+                client, tracer, workspace,
+                lambda label: self._verify(
+                    workspace, sandbox, tracer, f"{run_id}-{label}"),
+                approve=approve, max_rounds=rounds,
+            )
+            outcome = loop.run(spec, submission, report)
+            submission, spec, report = (
+                outcome.submission, outcome.spec, outcome.report)
+            repairs = outcome.steps
+            attempts, rejections = outcome.attempts, outcome.rejections
+
+        tracer.event("run_end", outcome=report.verdict())
+        return RunResult(
+            requirement="(repair of an existing workspace)",
+            workspace=workspace, run_id=run_id, submission=submission,
+            report=report, duration_s=time.monotonic() - started,
+            mode="multi", spec=spec, agent_attempts=attempts,
+            contract_rejections=rejections, cost=tracer.totals(),
+            provider=client.provider.name, repairs=repairs,
+            initial_verdict=initial,
+        )
+
+    # -- project stage ---------------------------------------------------------
+
+    def _build_project(
+        self,
+        client: LLMClient,
+        tracer: Tracer,
+        requirement: str,
+        workspace: Path,
+        plan: ProjectPlan | None,
+        approve_plan: PlanApprover | None,
+        approve: Approver | None,
+    ):
+        """Architect -> plan approval -> per-module spec, implementation, tests.
+
+        Modules are built dependencies-first, and a module's spec is handed
+        the *signatures* of what it may import, taken from the already-built
+        specs rather than from the model, so an interface cannot drift
+        between the module that offers it and the one that uses it.
+
+        Returns ``(submission, specs, plan, attempts, rejections)``, or a
+        string explaining why the run stopped before any code was written.
+        """
+        attempts = 0
+        rejections: list[str] = []
+
+        if plan is None:
+            result = ArchitectAgent(client, tracer=tracer).run(
+                requirement=requirement)
+            plan = result.output
+            attempts += result.attempts
+            rejections += result.rejections
+        else:
+            tracer.event("plan_supplied", modules=[m.name for m in plan.modules])
+
+        if approve_plan is not None:
+            approved_plan = approve_plan(plan)
+            if approved_plan is None:
+                tracer.event("plan_decision", decision="rejected")
+                return "the project plan was rejected at the approval checkpoint"
+            plan = approved_plan
+            tracer.event("plan_decision", decision="approved")
+
+        work = workspace / WORK_DIR_NAME
+        (work / "specs").mkdir(parents=True, exist_ok=True)
+        (work / "plan.json").write_text(plan.to_json(), encoding="utf-8")
+        if plan.dependencies:
+            (workspace / "requirements.txt").write_text(
+                "\n".join(d.name for d in plan.dependencies) + "\n",
+                encoding="utf-8")
+
+        specs: dict[str, Spec] = {}
+        files: list[SourceFile] = []
+        for module in plan.build_order():
+            uses = [f"{dep}.{fn.signature}"
+                    for dep in module.depends_on
+                    for fn in specs[dep].functions]
+            module_requirement = (
+                f"{module.requirement}\n\nThe module must be named "
+                f"`{module.name}` (the file `{module.name}.py` at the "
+                f"workspace root)."
+            )
+            if uses:
+                module_requirement += (
+                    "\n\nIt may import these already-built modules, and must "
+                    "call them rather than re-implement them:\n"
+                    + "\n".join(f"- {u}" for u in uses))
+
+            spec_result = SpecAgent(client, tracer=tracer).run(
+                requirement=module_requirement)
+            spec = spec_result.output
+            attempts += spec_result.attempts
+            rejections += spec_result.rejections
+            if spec.module != module.name:
+                # The plan, not the spec agent, owns module names: other
+                # modules already import this one by the planned name.
+                tracer.event("spec_module_overridden", planned=module.name,
+                             got=spec.module)
+                spec = Spec.from_dict({**spec.to_dict(), "module": module.name})
+            spec = replace(spec, uses=uses)
+
+            if approve is not None:
+                approved = approve(spec)
+                if approved is None:
+                    tracer.event("spec_decision", module=module.name,
+                                 decision="rejected")
+                    return (f"the specification for '{module.name}' was "
+                            f"rejected at the approval checkpoint")
+                spec = approved
+            specs[module.name] = spec
+            (work / "specs" / f"{module.name}.json").write_text(
+                spec.to_json(), encoding="utf-8")
+
+            impl = ImplementerAgent(client, tracer=tracer).run(spec=spec)
+            tests = TestAuthorAgent(client, tracer=tracer).run(spec=spec)
+            attempts += impl.attempts + tests.attempts
+            rejections += impl.rejections + tests.rejections
+            files += [*impl.output.files, *tests.output.files]
+
+        paths = [f.path for f in files]
+        duplicates = sorted({p for p in paths if paths.count(p) > 1})
+        if duplicates:
+            raise AgentFailure("pipeline", 1,
+                               [f"modules produced colliding paths: {duplicates}"])
+
+        submission = CodeSubmission(files=files, notes=plan.summary)
+        return submission, specs, plan, attempts, rejections
 
     # -- multi-agent stages ----------------------------------------------------
 
@@ -326,6 +542,27 @@ class Pipeline:
             workspace / WORK_DIR_NAME / "reports" / f"{report.run_id}.json"
         )
         return report
+
+
+def owner_module(report: GateReport, modules: list[str]) -> str:
+    """The module most implicated by a failing report.
+
+    Findings carry file paths (``tests/test_stats.py``, an absolute path from
+    ruff, ``stats.py``). The first blocked finding whose file belongs to a
+    known module names the owner; with no such pointer, the first module
+    built is used, since it is the one the others depend on.
+    """
+    for result in report.results:
+        if not result.blocked:
+            continue
+        for finding in result.findings:
+            if not finding.file:
+                continue
+            stem = Path(finding.file.replace("\\", "/")).name
+            stem = stem.removeprefix("test_").removesuffix(".py")
+            if stem in modules:
+                return stem
+    return modules[0]
 
 
 def _is_within(target: Path, root: Path) -> bool:

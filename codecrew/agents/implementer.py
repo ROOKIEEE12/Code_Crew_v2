@@ -33,7 +33,11 @@ Quality requirements:
 docstring on each.
 - Never hardcode credentials. Never use `eval`, `exec` or `shell=True` on \
 caller-supplied input. Validate untrusted input explicitly.
-- Standard library only unless the specification says otherwise.
+- Standard library only. Do not import any third-party package.
+- If the specification has a `uses` list, those already-built modules sit \
+beside yours at the workspace root. Import them (`from <module> import ...`) \
+and call them exactly as their signatures state; do not re-implement their \
+behaviour and do not edit them.
 
 Reply with a single JSON object and nothing else:
 

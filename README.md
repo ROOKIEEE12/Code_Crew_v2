@@ -88,6 +88,8 @@ Build flags: `--provider`, `--script`, `--fast-model`, `--strong-model`,
 | G5 | Security scan | yes | `bandit` + `detect-secrets`; secrets are always HIGH |
 | G4 | Mutation score | yes | do the tests actually detect injected bugs? |
 | G6 | Property-based coverage | no | share of public functions with a Hypothesis test |
+| G7 | Spec conformance | yes | the spec's own examples, executed against the code (multi/project only) |
+| G8 | Dependency check | yes | undeclared imports (offline); existence, vulnerabilities, age (PyPI) |
 
 Gates run cheapest-first so a failing patch gets feedback in seconds. A gate
 whose dependency failed reports `SKIP — blocked by G1` instead of running
@@ -360,6 +362,98 @@ formatting) still do. A gate that blocks on style teaches people to ignore it.
 full pipeline is demonstrable with no key, no quota and no network — and the
 evaluation can be replayed deterministically later.
 
+## Phase 3: reconciliation
+
+When the gates fail, the question is not "how do I make the tests pass" but
+**"which artefact is wrong?"** A loop that only knows the first question
+bends correct code to satisfy a wrong test. Phase 2 measured exactly that
+risk: 6 of 10 workspaces failed their own tests while every implementation
+was correct.
+
+```
+gates fail -> [Diagnostician]  sees: spec + code + tests + failure evidence
+                 |  judged against the spec's rule text
+                 +- code_defect -> patch the implementation
+                 +- test_defect -> patch the tests
+                 +- spec_defect -> correct the spec (human sees it),
+                                   re-derive tests from it, code untouched
+              -> every gate re-runs -> accept or revert
+```
+
+- **A patch is kept only on evidence.** More gates must pass *and* none that
+  passed before may now fail; otherwise the workspace is restored exactly.
+  Counting passing gates (not failing ones) matters: fixing G2 lets G3 run
+  for the first time, which can add failures. That is progress being
+  unmasked, and a failure-count metric would revert the patches that worked.
+- **Guards against the cheap route to green:** a patch may only touch files it
+  was given and must return them whole; a test patch may remove at most as
+  many tests as failed and never all of them (a test of unspecified behaviour
+  has no correct form, so removing exactly that one is the fix); a spec
+  repair may fix rules and examples but not rename the API.
+- **Short ladder:** patch, patch again with the failed attempts as negative
+  examples, then stop and say so. Regeneration is deliberately not a rung:
+  at temperature 0 it would mostly reproduce the same output.
+- A repaired run reports its **pre-repair verdict** beside the final one.
+
+**G7 spec conformance** is the deterministic half: it executes the spec's own
+examples against the implementation inside the sandbox, with no model. It
+would have caught the Phase 2 password example (`'short'` listing `no_lower`)
+in seconds, and says *which example* disagrees. A mismatch does not say who
+is wrong, which is the Diagnostician's job.
+
+`build --repair N` (default 2); `bench --repair N` (default 0, an explicit
+ablation); `bench --existing --repair N` applies the loop to workspaces that
+already exist, isolating its effect on identical artefacts.
+
+**Tuning caveat, stated plainly:** the Test-Author's contract now rejects
+assertions about a module's exported names, and its prompt forbids symlinks
+and zero divisors. Those rules came from the Phase 2 failures, so the same 10
+tasks are no longer an unbiased measure for those dimensions.
+
+## Phase 4: multi-module projects and dependency checks
+
+`build --mode project` adds an **Architect** that splits a requirement that
+is too big for one module into 2-8 modules, each then built by exactly the
+same isolated spec / implementer / test-author agents.
+
+- **Plan first, approved first.** Module boundaries are cheapest to fix
+  before any spec exists. The plan lists third-party packages with the
+  reviewer's attention drawn to them, since each is supply-chain surface.
+- **Dependencies-first build, with interfaces set by code, not by a model.**
+  A module is handed the *signatures* of the modules it may import, taken
+  from their already-built specs and written into its spec's `uses` field by
+  the pipeline. A model cannot drift an interface it never retyped.
+- **The plan owns names.** If the spec agent renames a module, the planned
+  name wins, because other modules already import it by that name. Module
+  names that would shadow the standard library (`random.py`) are rejected.
+- **The loop works per module.** A failure is attributed to the module its
+  findings point at, and the correction is written to that module's spec.
+
+**G8 dependency check**, two tiers kept apart so neither impersonates the
+other:
+
+| tier | needs network | catches |
+|---|---|---|
+| offline, always | no | every third-party import must be declared in the approved plan: a hallucinated dependency fails here; "stdlib only" is *checked*, not assumed |
+| online, when PyPI is reachable | yes | declared package must exist (404 is CRITICAL), must have no known vulnerability, and is flagged when brand new or abandoned |
+
+If PyPI cannot be reached the gate reports **SKIP**, not a clean pass. Only
+implementation files are scanned; test imports (pytest, hypothesis) belong to
+the sandbox toolchain.
+
+One project task is included (`bench --tasks wordstats`), kept out of the
+default suite so the single-module numbers stay exactly what they were.
+
+**Limits of Phase 4, stated plainly:**
+- Declared third-party packages are vetted but **not installed** in the
+  sandbox (that would need network), so a project that genuinely requires one
+  cannot run its tests yet. The Implementer is told stdlib-only, and the plan
+  is where an exception is argued for.
+- Cross-module behaviour is covered by each module's own tests plus the
+  spec-example check; there is no separately authored integration suite.
+- Project mode is verified offline with scripted models and real gates, and
+  has **not** yet been measured against a live model.
+
 ## Layout
 
 ```
@@ -390,7 +484,7 @@ samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
   replays/           canned responses for offline demos
-tests/               CodeCrew's own suite (209 tests)
+tests/               CodeCrew's own suite (312 tests)
 ```
 
 Evidence for every claim is written to
@@ -405,8 +499,8 @@ only assert a gate outcome by citing one of those files.
 | 0 | Sandbox + gate layer + CLI, no LLM | **done** |
 | 1 | Free-tier LLM layer, typed contracts, Coder agent, single-agent baseline | **done** |
 | 2 | Spec Agent + Test-Author with context isolation, approval checkpoint, comparison harness | **done; hypothesis not supported at n=10** |
-| 3 | Reconciliation loop: classify a failure as code / test / spec defect against the spec, patch the right artefact, full gate re-run per patch | next |
-| 4 | Architect, multi-file projects, dependency sanity check | |
+| 3 | Reconciliation loop: classify a failure as code / test / spec defect against the spec, patch the right artefact, full gate re-run per patch | **built and tested offline; live measurement partial** (Groq daily quota) |
+| 4 | Architect, multi-module projects, dependency sanity gate | **built and tested offline; not yet measured live** |
 | 5 | Streamlit UI, trust badges, CI export | |
 | 6 | Full evaluation + four-way ablation study | |
 

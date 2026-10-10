@@ -109,6 +109,14 @@ def render_run(result, *, isolation: str | None = None) -> str:
             lines.append("  " + chunk)
         return "\n".join(lines + ["", "=" * _WIDTH])
 
+    plan = getattr(result, "plan", None)
+    if plan is not None:
+        lines += ["", "-" * _WIDTH, "PROJECT PLAN", "-" * _WIDTH]
+        lines += ["  " + line for line in plan.render().splitlines()]
+    for name, module_spec in (getattr(result, "specs", None) or {}).items():
+        lines += ["", "-" * _WIDTH, f"SPECIFICATION: {name}", "-" * _WIDTH]
+        lines += ["  " + line for line in module_spec.render().splitlines()]
+
     spec = getattr(result, "spec", None)
     if spec is not None:
         lines += ["", "-" * _WIDTH, "APPROVED SPECIFICATION", "-" * _WIDTH]

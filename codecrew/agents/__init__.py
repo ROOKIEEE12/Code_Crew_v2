@@ -1,5 +1,6 @@
 """Agents: specialised workers with typed output contracts."""
 
+from .architect import ArchitectAgent
 from .base import Agent, AgentFailure, AgentResult, ContextViolation
 from .coder import CoderAgent
 from .contracts import (
@@ -8,6 +9,9 @@ from .contracts import (
     Diagnosis,
     Example,
     FunctionSpec,
+    PlanDependency,
+    PlanModule,
+    ProjectPlan,
     SourceFile,
     Spec,
     extract_json,
@@ -24,6 +28,10 @@ __all__ = [
     "AgentResult",
     "AgentFailure",
     "ContextViolation",
+    "ArchitectAgent",
+    "PlanDependency",
+    "PlanModule",
+    "ProjectPlan",
     "CoderAgent",
     "DiagnosticianAgent",
     "PatcherAgent",

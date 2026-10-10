@@ -155,12 +155,16 @@ class BenchRunner:
         out_dir: Path | None = None,
         mode: str = "single",
         repair_rounds: int = 0,
+        existing: bool = False,
     ) -> None:
         self.llm_config = llm_config
         self.gate_config = gate_config or GateConfig()
         self.out_dir = (out_dir or Path("bench_runs")).resolve()
         self.mode = mode
         self.repair_rounds = repair_rounds
+        #: Re-use the workspaces already in ``out_dir`` and only run the
+        #: gates and the repair loop, instead of generating again.
+        self.existing = existing
 
     def run(self, tasks: list[Task], *, clean: bool = True) -> list[TaskOutcome]:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -175,10 +179,18 @@ class BenchRunner:
 
     def run_task(self, task: Task, *, clean: bool = True) -> TaskOutcome:
         workspace = self.out_dir / task.id
+        pipeline = Pipeline(self.llm_config, self.gate_config)
+
+        if self.existing:
+            if not workspace.exists():
+                raise FileNotFoundError(
+                    f"no existing workspace for task {task.id!r} in "
+                    f"{self.out_dir}")
+            return self._score(
+                task, pipeline.repair(workspace, rounds=self.repair_rounds))
+
         if clean and workspace.exists():
             shutil.rmtree(workspace)
-
-        pipeline = Pipeline(self.llm_config, self.gate_config)
         # The spec is auto-approved here: a benchmark cannot pause for a
         # human, and the approval checkpoint is evaluated separately.
         result = pipeline.build(task.requirement, workspace,

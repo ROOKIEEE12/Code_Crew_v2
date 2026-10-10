@@ -38,19 +38,30 @@ from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
 work = root / ".codecrew"
-spec = json.loads((work / "spec.json").read_text(encoding="utf-8"))
-out = {"module_error": None, "examples": []}
 
-try:
-    module = importlib.import_module(spec["module"])
-except BaseException as exc:
-    out["module_error"] = f"{type(exc).__name__}: {exc}"
-else:
+# One spec for a single-module build, one per module for a project.
+spec_files = []
+if (work / "spec.json").exists():
+    spec_files.append(work / "spec.json")
+if (work / "specs").is_dir():
+    spec_files += sorted((work / "specs").glob("*.json"))
+
+out = {"module_errors": [], "examples": []}
+
+for spec_file in spec_files:
+    spec = json.loads(spec_file.read_text(encoding="utf-8"))
+    try:
+        module = importlib.import_module(spec["module"])
+    except BaseException as exc:
+        out["module_errors"].append(
+            f"{spec['module']}: {type(exc).__name__}: {exc}")
+        continue
     namespace = dict(vars(module))
     for function in spec["functions"]:
         name = function["signature"].split("(")[0].replace("def ", "").strip()
         for example in function.get("examples", []):
             record = {
+                "module": spec["module"],
                 "function": name,
                 "call": example["call"],
                 "expected": example.get("result"),
@@ -92,7 +103,11 @@ class ConformanceGate(Gate):
         a skip is reported as unverified, and a gate that cannot apply has
         not failed to verify anything.
         """
-        return (ctx.workspace / WORK_DIR_NAME / SPEC_FILE).exists()
+        work = ctx.workspace / WORK_DIR_NAME
+        if (work / SPEC_FILE).exists():
+            return True
+        specs = work / "specs"
+        return specs.is_dir() and any(specs.glob("*.json"))
 
     def check(self, ctx: GateContext) -> GateResult:
         work = ctx.workspace / WORK_DIR_NAME
@@ -113,13 +128,13 @@ class ConformanceGate(Gate):
             )
         data = json.loads(result_file.read_text(encoding="utf-8"))
 
-        if data.get("module_error"):
+        if data.get("module_errors"):
             return self._result(
-                ctx, Status.FAIL, "the specified module cannot be imported",
+                ctx, Status.FAIL, "a specified module cannot be imported",
                 findings=[Finding(
                     severity=Severity.CRITICAL, code="spec-module-import",
-                    message=data["module_error"],
-                )],
+                    message=message,
+                ) for message in data["module_errors"]],
                 evidence=evidence,
             )
 
@@ -136,6 +151,7 @@ class ConformanceGate(Gate):
             Finding(
                 severity=Severity.HIGH,
                 code="spec-example-mismatch",
+                file=f"{e['module']}.py" if e.get("module") else None,
                 message=(
                     f"{e['call']}: the spec expects "
                     + (f"it to raise {e['raises']}" if e.get("raises")

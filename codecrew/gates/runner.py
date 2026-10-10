@@ -12,6 +12,7 @@ from ..sandbox import Sandbox, get_sandbox
 from .base import Gate, GateContext
 from .conformance import ConformanceGate
 from .coverage import CoverageGate
+from .dependencies import DependencyGate
 from .mutation import MutationGate
 from .properties import PropertyGate
 from .security import SecurityGate
@@ -22,6 +23,7 @@ from .tests import TestGate
 #: failing patch gets feedback in seconds rather than minutes.
 GATE_CLASSES: tuple[type[Gate], ...] = (
     SyntaxGate,
+    DependencyGate,
     ConformanceGate,
     TestGate,
     CoverageGate,

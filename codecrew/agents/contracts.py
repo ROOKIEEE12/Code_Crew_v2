@@ -342,6 +342,10 @@ class Spec:
     #: checkpoint, because a silent guess is a silent bug.
     assumptions: list[str] = field(default_factory=list)
     acceptance_criteria: list[str] = field(default_factory=list)
+    #: Signatures of already-built sibling modules this one may import, as
+    #: ``module.func(args) -> type``. Set by the pipeline from the project
+    #: plan, never by the model, so the interface cannot drift.
+    uses: list[str] = field(default_factory=list)
 
     @classmethod
     def parse(cls, text: str) -> "Spec":
@@ -362,6 +366,13 @@ class Spec:
             raise ContractError(
                 f"'module' must be a lowercase snake_case Python identifier, "
                 f"got {module!r}"
+            )
+        if module in STDLIB_NAMES:
+            raise ContractError(
+                f"module '{module}' would shadow the standard library module "
+                f"of the same name",
+                hint="Pick a more specific name; a file called "
+                     f"{module}.py breaks every import of the real one.",
             )
 
         raw_functions = payload.get("functions")
@@ -392,6 +403,7 @@ class Spec:
             security=_string_list(payload, "security"),
             assumptions=_string_list(payload, "assumptions"),
             acceptance_criteria=_string_list(payload, "acceptance_criteria"),
+            uses=_string_list(payload, "uses"),
         )
 
     def to_dict(self) -> dict:
@@ -416,6 +428,7 @@ class Spec:
             "security": list(self.security),
             "assumptions": list(self.assumptions),
             "acceptance_criteria": list(self.acceptance_criteria),
+            "uses": list(self.uses),
         }
 
     def to_json(self) -> str:
@@ -433,7 +446,8 @@ class Spec:
                 outcome = f"-> {ex.result}" if ex.raises is None else f"raises {ex.raises}"
                 lines.append(f"      e.g. {ex.call} {outcome}")
             lines.append("")
-        for title, items in (("Constraints", self.constraints),
+        for title, items in (("Uses (already-built modules)", self.uses),
+                             ("Constraints", self.constraints),
                              ("Security", self.security),
                              ("Assumptions (CHECK THESE)", self.assumptions),
                              ("Acceptance criteria", self.acceptance_criteria)):
@@ -441,6 +455,193 @@ class Spec:
                 lines.append(f"{title}:")
                 lines.extend(f"  - {item}" for item in items)
                 lines.append("")
+        return "\n".join(lines).rstrip()
+
+
+# -- the project plan (Phase 4) --------------------------------------------------
+
+import sys as _sys
+
+#: Names of standard-library modules. A project module with one of these
+#: names silently replaces the real module for everything that imports it.
+STDLIB_NAMES = frozenset(getattr(_sys, "stdlib_module_names", ()))
+
+MAX_MODULES = 8
+_DIST_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+@dataclass(frozen=True)
+class PlanModule:
+    name: str
+    responsibility: str
+    #: A self-contained requirement for this module, naming what it exports.
+    requirement: str
+    depends_on: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlanDependency:
+    """A third-party package the plan asks for, with a reason."""
+
+    name: str
+    purpose: str
+
+
+@dataclass
+class ProjectPlan:
+    """The architect's decomposition of a requirement into modules.
+
+    Each module is then specified, implemented and tested through the same
+    pipeline as a single-module build. The plan is what a person approves
+    first: it is cheaper to correct a module boundary here than after five
+    files exist.
+    """
+
+    summary: str
+    modules: list[PlanModule]
+    dependencies: list[PlanDependency] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @classmethod
+    def parse(cls, text: str) -> "ProjectPlan":
+        return cls.from_dict(extract_json(text))
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "ProjectPlan":
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ContractError("'summary' must be a non-empty string")
+
+        raw = payload.get("modules")
+        if not isinstance(raw, list) or not raw:
+            raise ContractError("'modules' must be a non-empty array")
+        if len(raw) > MAX_MODULES:
+            raise ContractError(
+                f"{len(raw)} modules planned; limit is {MAX_MODULES}",
+                hint="Merge modules that always change together.",
+            )
+
+        modules: list[PlanModule] = []
+        names: set[str] = set()
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise ContractError(f"modules[{index}] is not an object")
+            name = entry.get("name")
+            if (not isinstance(name, str) or not _is_identifier(name)
+                    or not re.fullmatch(r"[a-z_][a-z0-9_]*", name)):
+                raise ContractError(
+                    f"modules[{index}] name must be a lowercase snake_case "
+                    f"identifier, got {name!r}")
+            if name in STDLIB_NAMES:
+                raise ContractError(
+                    f"module '{name}' would shadow the standard library",
+                    hint="Pick a more specific name.")
+            if name in names:
+                raise ContractError(f"module '{name}' is planned twice")
+            names.add(name)
+            for key in ("responsibility", "requirement"):
+                value = entry.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise ContractError(
+                        f"module '{name}' needs a non-empty '{key}'")
+            depends = entry.get("depends_on") or []
+            if not isinstance(depends, list) or not all(
+                    isinstance(d, str) for d in depends):
+                raise ContractError(
+                    f"module '{name}' depends_on must be an array of names")
+            modules.append(PlanModule(
+                name=name,
+                responsibility=entry["responsibility"].strip(),
+                requirement=entry["requirement"].strip(),
+                depends_on=tuple(depends),
+            ))
+
+        for module in modules:
+            for dep in module.depends_on:
+                if dep not in names:
+                    raise ContractError(
+                        f"module '{module.name}' depends on unknown module "
+                        f"'{dep}'",
+                        hint="Known modules: " + ", ".join(sorted(names)))
+                if dep == module.name:
+                    raise ContractError(
+                        f"module '{module.name}' depends on itself")
+
+        dependencies = []
+        for index, entry in enumerate(payload.get("dependencies") or []):
+            if not isinstance(entry, dict):
+                raise ContractError(f"dependencies[{index}] is not an object")
+            dep_name = entry.get("name")
+            if not isinstance(dep_name, str) or not _DIST_NAME.fullmatch(dep_name):
+                raise ContractError(
+                    f"dependencies[{index}] has an invalid package name "
+                    f"{dep_name!r}")
+            purpose = entry.get("purpose")
+            if not isinstance(purpose, str) or not purpose.strip():
+                raise ContractError(
+                    f"dependency '{dep_name}' must state its purpose",
+                    hint="Prefer the standard library; every third-party "
+                         "package needs a reason.")
+            dependencies.append(PlanDependency(dep_name, purpose.strip()))
+
+        plan = cls(summary=summary.strip(), modules=modules,
+                   dependencies=dependencies,
+                   notes=_string_list(payload, "notes"))
+        plan.build_order()          # raises on a dependency cycle
+        return plan
+
+    def build_order(self) -> list[PlanModule]:
+        """Dependencies first. Stable, so equal plans build identically."""
+        by_name = {m.name: m for m in self.modules}
+        remaining = {m.name: set(m.depends_on) for m in self.modules}
+        ordered: list[PlanModule] = []
+        while remaining:
+            ready = [n for n in (m.name for m in self.modules)
+                     if n in remaining and not remaining[n]]
+            if not ready:
+                raise ContractError(
+                    "the modules have a circular dependency: "
+                    + ", ".join(sorted(remaining)),
+                    hint="Break the cycle by moving the shared part into a "
+                         "module both depend on.")
+            for name in ready:
+                ordered.append(by_name[name])
+                del remaining[name]
+                for deps in remaining.values():
+                    deps.discard(name)
+        return ordered
+
+    def to_dict(self) -> dict:
+        return {
+            "summary": self.summary,
+            "modules": [
+                {"name": m.name, "responsibility": m.responsibility,
+                 "requirement": m.requirement, "depends_on": list(m.depends_on)}
+                for m in self.modules
+            ],
+            "dependencies": [{"name": d.name, "purpose": d.purpose}
+                             for d in self.dependencies],
+            "notes": list(self.notes),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+    def render(self) -> str:
+        lines = [f"Project: {self.summary}", ""]
+        for module in self.build_order():
+            deps = (f"  (uses: {', '.join(module.depends_on)})"
+                    if module.depends_on else "")
+            lines.append(f"  {module.name}.py{deps}")
+            lines.append(f"      {module.responsibility}")
+        lines.append("")
+        if self.dependencies:
+            lines.append("Third-party packages requested (CHECK THESE):")
+            lines += [f"  - {d.name}: {d.purpose}" for d in self.dependencies]
+        else:
+            lines.append("Third-party packages: none (standard library only)")
+        for note in self.notes:
+            lines.append(f"Note: {note}")
         return "\n".join(lines).rstrip()
 
 

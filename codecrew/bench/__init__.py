@@ -14,10 +14,11 @@ from .runner import (
     summarize,
     write_results,
 )
-from .tasks import TASKS, Task, get_tasks
+from .tasks import PROJECT_TASKS, TASKS, Task, get_tasks
 
 __all__ = [
     "compare_results",
+    "PROJECT_TASKS",
     "TASKS",
     "Task",
     "get_tasks",

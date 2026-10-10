@@ -3,6 +3,7 @@
 from .base import Gate, GateContext
 from .conformance import ConformanceGate
 from .coverage import CoverageGate
+from .dependencies import DependencyGate
 from .mutation import MutationGate
 from .properties import PropertyGate
 from .runner import GATE_CLASSES, GateRunner, all_gate_ids
@@ -18,6 +19,7 @@ __all__ = [
     "all_gate_ids",
     "SyntaxGate",
     "ConformanceGate",
+    "DependencyGate",
     "TestGate",
     "CoverageGate",
     "SecurityGate",

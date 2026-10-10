@@ -20,7 +20,7 @@ wrong: path traversal and injection).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,15 @@ class Task:
     requirement: str
     hidden_tests: str
     reference: str
+    #: Multi-module tasks: every file of the reference, path -> source.
+    #: Empty for the single-module tasks, where ``reference`` is the module.
+    reference_files: dict = field(default_factory=dict)
+
+    def reference_sources(self) -> dict[str, str]:
+        """Path -> source of the whole reference solution."""
+        if self.reference_files:
+            return dict(self.reference_files)
+        return {f"{self.module}.py": self.reference}
 
 
 def _req(description: str, module: str, interface: str) -> str:
@@ -690,11 +699,139 @@ def build_select(table, columns, filters=None):
 )
 
 
+#: Multi-module tasks. Kept apart from ``TASKS`` so the single-module suite,
+#: and every number already measured on it, stays exactly what it was. They
+#: are selected by id (``bench --tasks wordstats``).
+PROJECT_TASKS: tuple[Task, ...] = (
+    Task(
+        id="wordstats",
+        tier="project",
+        module="wordstats",
+        requirement=(
+            "Build a small two-module text-statistics project.\n\n"
+            "Module `tokenizer` (file `tokenizer.py`) exposes exactly "
+            "`tokenize(text: str) -> list[str]`. A word is a maximal run of "
+            "ASCII letters (A-Z, a-z); everything else, including digits and "
+            "apostrophes, separates words. Words are returned lowercase, in "
+            "order of appearance, repeats included.\n\n"
+            "Module `wordstats` (file `wordstats.py`) exposes exactly "
+            "`summarize(text: str, top: int = 3) -> dict`. It MUST use "
+            "`tokenizer.tokenize` for splitting rather than re-implementing "
+            "it. The dict has exactly these keys: `total` (number of words), "
+            "`unique` (number of distinct words), `longest` (the longest "
+            "word, the earliest one on a tie, or the empty string when there "
+            "are no words) and `top` (a list of (word, count) tuples sorted "
+            "by count descending then word ascending, truncated to `top` "
+            "entries). A negative `top` raises ValueError; `top == 0` gives "
+            "an empty list."
+        ),
+        hidden_tests=r'''
+import pytest
+from tokenizer import tokenize
+from wordstats import summarize
+
+def test_tokenize_lowercases_and_keeps_order_and_repeats():
+    assert tokenize("The cat, the DOG!") == ["the", "cat", "the", "dog"]
+
+def test_tokenize_splits_on_digits_and_apostrophes():
+    assert tokenize("it's 2 fast") == ["it", "s", "fast"]
+
+def test_tokenize_of_nothing():
+    assert tokenize("") == []
+    assert tokenize("123 !!! 456") == []
+
+def test_summarize_worked_example():
+    result = summarize("the cat and the dog and the bird")
+    assert result == {"total": 8, "unique": 5, "longest": "bird",
+                      "top": [("the", 3), ("and", 2), ("bird", 1)]}
+
+def test_longest_ties_go_to_the_earliest():
+    assert summarize("aa bb cc")["longest"] == "aa"
+
+def test_empty_text():
+    assert summarize("") == {"total": 0, "unique": 0, "longest": "", "top": []}
+
+def test_top_parameter():
+    assert summarize("a b b c c c", top=2)["top"] == [("c", 3), ("b", 2)]
+    assert summarize("a b b c c c", top=0)["top"] == []
+    assert len(summarize("a b c d e", top=99)["top"]) == 5
+
+def test_negative_top_raises():
+    with pytest.raises(ValueError):
+        summarize("a b", top=-1)
+
+def test_case_is_ignored_when_counting():
+    assert summarize("Go go GO")["unique"] == 1
+
+def test_summary_agrees_with_the_tokenizer():
+    text = "One fish two fish red fish blue fish"
+    words = tokenize(text)
+    result = summarize(text)
+    assert result["total"] == len(words)
+    assert result["unique"] == len(set(words))
+''',
+        reference='''
+from collections import Counter
+
+from tokenizer import tokenize
+
+
+def summarize(text: str, top: int = 3) -> dict:
+    if top < 0:
+        raise ValueError("top must be non-negative")
+    words = tokenize(text)
+    counts = Counter(words)
+    longest = ""
+    for word in words:
+        if len(word) > len(longest):
+            longest = word
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {"total": len(words), "unique": len(counts),
+            "longest": longest, "top": ranked[:top]}
+''',
+        reference_files={
+            "tokenizer.py": '''
+import re
+
+_WORD = re.compile(r"[A-Za-z]+")
+
+
+def tokenize(text: str) -> list[str]:
+    return [word.lower() for word in _WORD.findall(text)]
+''',
+            "wordstats.py": '''
+from collections import Counter
+
+from tokenizer import tokenize
+
+
+def summarize(text: str, top: int = 3) -> dict:
+    if top < 0:
+        raise ValueError("top must be non-negative")
+    words = tokenize(text)
+    counts = Counter(words)
+    longest = ""
+    for word in words:
+        if len(word) > len(longest):
+            longest = word
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {"total": len(words), "unique": len(counts),
+            "longest": longest, "top": ranked[:top]}
+''',
+        },
+    ),
+)
+
+
 def get_tasks(ids: list[str] | None = None) -> list[Task]:
-    """Return all tasks, or the named subset in the order requested."""
+    """Return the default suite, or the named subset in the order requested.
+
+    Named lookup also searches the project tasks, which the default suite
+    deliberately does not include.
+    """
     if not ids:
         return list(TASKS)
-    by_id = {task.id: task for task in TASKS}
+    by_id = {task.id: task for task in (*TASKS, *PROJECT_TASKS)}
     unknown = [i for i in ids if i not in by_id]
     if unknown:
         raise KeyError(

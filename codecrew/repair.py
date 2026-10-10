@@ -138,6 +138,7 @@ class RepairLoop:
         *,
         approve: Approver | None = None,
         max_rounds: int = 2,
+        spec_path: Path | None = None,
     ) -> None:
         self.client = client
         self.tracer = tracer
@@ -145,6 +146,10 @@ class RepairLoop:
         self.verify = verify
         self.approve = approve
         self.max_rounds = max_rounds
+        #: Where this spec lives on disk. A project has one spec per module,
+        #: so the loop is told which one it is arbitrating against.
+        self.spec_path = (spec_path or
+                          self.workspace / WORK_DIR_NAME / "spec.json")
 
     # -- main loop -------------------------------------------------------------
 
@@ -267,8 +272,8 @@ class RepairLoop:
                 target.unlink()
         new_files = {f.path: f.content for f in tests.output.files}
         self._write(new_files)
-        (self.workspace / WORK_DIR_NAME / "spec.json").write_text(
-            new_spec.to_json(), encoding="utf-8")
+        self.spec_path.parent.mkdir(parents=True, exist_ok=True)
+        self.spec_path.write_text(new_spec.to_json(), encoding="utf-8")
 
         kept = [f for f in submission.files if not f.is_test]
         merged = kept + [SourceFile(p, c) for p, c in new_files.items()]
@@ -296,9 +301,8 @@ class RepairLoop:
             "submission": submission,
             "spec": spec,
             "files": self._current_files(submission),
-            "spec_json": (self.workspace / WORK_DIR_NAME / "spec.json")
-            .read_text(encoding="utf-8")
-            if (self.workspace / WORK_DIR_NAME / "spec.json").exists() else None,
+            "spec_json": self.spec_path.read_text(encoding="utf-8")
+            if self.spec_path.exists() else None,
         }
 
     def _restore(self, snapshot: dict) -> None:
@@ -316,8 +320,7 @@ class RepairLoop:
                 path.unlink()
         self._write(snapshot["files"])
         if snapshot["spec_json"] is not None:
-            (self.workspace / WORK_DIR_NAME / "spec.json").write_text(
-                snapshot["spec_json"], encoding="utf-8")
+            self.spec_path.write_text(snapshot["spec_json"], encoding="utf-8")
 
     def _write(self, files: dict[str, str]) -> None:
         for rel, content in files.items():

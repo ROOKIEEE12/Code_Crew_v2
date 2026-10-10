@@ -41,10 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="override the model used for reasoning tasks")
     build.add_argument("--temperature", type=float, default=0.0)
     build.add_argument("--max-tokens", type=int, default=4096)
-    build.add_argument("--mode", choices=("single", "multi"), default="multi",
+    build.add_argument("--mode", choices=("single", "multi", "project"),
+                       default="multi",
                        help="single: one agent writes code and tests (the "
                             "baseline). multi: spec -> approval -> independent "
-                            "implementer and test author")
+                            "implementer and test author. project: an "
+                            "architect splits the requirement into modules, "
+                            "each built the multi way")
     build.add_argument("--approve", choices=("ask", "auto"), default="ask",
                        help="multi mode: pause for spec approval (ask) or "
                             "proceed without review (auto)")
@@ -89,14 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
                        help="comma-separated gate ids to skip, e.g. G4 "
                             "(much faster, weaker verdict)")
     bench.add_argument("--max-mutants", type=int, default=None)
+    bench.add_argument("--existing", action="store_true",
+                       help="do not generate: re-use the workspaces already "
+                            "in --out and run the gates plus --repair on "
+                            "them (isolates the loop's effect)")
     bench.add_argument("--repair", type=int, default=0, metavar="N",
                        help="multi mode: reconciliation rounds per task "
                             "(default 0, so the loop's effect is an explicit "
                             "ablation and not mixed into the base result)")
-    bench.add_argument("--mode", choices=("single", "multi"), default="single",
+    bench.add_argument("--mode", choices=("single", "multi", "project"),
+                       default="single",
                        help="single: one agent writes code and tests. multi: "
                             "independent implementer and test author, spec "
-                            "auto-approved")
+                            "auto-approved. project: architect plus "
+                            "per-module multi (for the project tasks)")
 
     compare = sub.add_parser(
         "compare", help="compare two benchmark results.json files side by side")
@@ -162,6 +171,35 @@ def _interactive_approver(out_dir: Path):
     return approve
 
 
+def _interactive_plan_approver(out_dir: Path):
+    """Review module boundaries and third-party packages before any spec."""
+
+    def approve(plan):
+        print("\n" + "=" * 74)
+        print("PROJECT PLAN - review the module boundaries")
+        print("=" * 74)
+        print(plan.render())
+        print("=" * 74)
+        print("Each module will get its own specification, which you will "
+              "also be asked\nto review. Third-party packages are the "
+              "riskiest line here: every one is\nsupply-chain surface.\n")
+        while True:
+            answer = input("Approve plan? [y]es / [n]o / [e]dit as file: ").strip().lower()
+            if answer in ("y", "yes"):
+                return plan
+            if answer in ("n", "no"):
+                return None
+            if answer in ("e", "edit"):
+                draft = out_dir / ".codecrew" / "plan.draft.json"
+                draft.parent.mkdir(parents=True, exist_ok=True)
+                draft.write_text(plan.to_json(), encoding="utf-8")
+                print(f"\nWrote {draft}. Edit it, then re-run with a plan "
+                      f"supplied.")
+                return None
+
+    return approve
+
+
 def _build(args: argparse.Namespace) -> int:
     tiers = None
     if args.fast_model or args.strong_model:
@@ -197,20 +235,25 @@ def _build(args: argparse.Namespace) -> int:
             return 2
 
     approver = None
-    if args.mode == "multi" and args.approve == "ask":
+    plan_approver = None
+    if args.mode in ("multi", "project") and args.approve == "ask":
         if not sys.stdin.isatty():
-            print("error: spec approval needs a terminal. Re-run with "
+            print("error: approval needs a terminal. Re-run with "
                   "--approve auto, or supply a reviewed --spec.",
                   file=sys.stderr)
             return 2
         approver = _interactive_approver(args.out)
+        if args.mode == "project":
+            plan_approver = _interactive_plan_approver(args.out)
 
     try:
         pipeline = Pipeline(llm_config=llm_config, gate_config=gate_config)
         result = pipeline.build(
             args.requirement, args.out,
             mode=args.mode, spec=supplied_spec, approve=approver,
-            repair_rounds=args.repair if args.mode == "multi" else 0,
+            approve_plan=plan_approver,
+            repair_rounds=(args.repair if args.mode in ("multi", "project")
+                           else 0),
             clean=args.clean, verify=not args.no_verify,
         )
     except ProviderUnavailable as exc:
@@ -226,6 +269,7 @@ def _build(args: argparse.Namespace) -> int:
 
 def _bench(args: argparse.Namespace) -> int:
     from .bench import (
+        PROJECT_TASKS,
         TASKS,
         BenchRunner,
         get_tasks,
@@ -235,7 +279,7 @@ def _bench(args: argparse.Namespace) -> int:
     )
 
     if args.list:
-        for task in TASKS:
+        for task in (*TASKS, *PROJECT_TASKS):
             print(f"{task.id:16} {task.tier:9} {task.module}")
         return 0
 
@@ -262,7 +306,7 @@ def _bench(args: argparse.Namespace) -> int:
 
     try:
         runner = BenchRunner(llm_config, gate_config, args.out, mode=args.mode,
-                             repair_rounds=args.repair)
+                             repair_rounds=args.repair, existing=args.existing)
         outcomes = runner.run(tasks)
     except ProviderUnavailable as exc:
         print(f"error: {exc}", file=sys.stderr)
