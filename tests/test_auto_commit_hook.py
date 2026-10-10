@@ -37,7 +37,13 @@ def _find_bash() -> str | None:
 
 
 BASH = _find_bash()
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash is not available")
+# Each test spawns bash and several git processes, which is slow on Windows.
+# They are part of the full suite, not of the fast subset the hook itself
+# runs before every commit (that would make every stop cost minutes).
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(BASH is None, reason="bash is not available"),
+]
 
 
 def git(cwd: Path, *args: str) -> str:

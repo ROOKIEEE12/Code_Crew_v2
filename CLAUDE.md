@@ -37,8 +37,9 @@ lambda assignment); those are not defects and do not block a commit. Do not
 - **Never work on `main`/`master`.** If you are on one, first
   `git switch -c <type>/<short-topic>` (for example `feat/spec-badge`).
 - Before committing, the checks above (compile, lint, fast tests) must pass.
-  Run the full test suite as well when you touched gates, pipeline, repair or
-  agents.
+  Run the full test suite as well when you touched gates, pipeline, repair,
+  agents, or the Stop hook itself (its tests are marked `slow`, so the hook's
+  own fast run does not cover them).
 - **Commit only after checks pass**, with a conventional commit message:
   `feat|fix|docs|test|refactor|perf|build|ci|chore(scope): summary`, subject
   under 100 characters, imperative mood, body explaining *why*.
