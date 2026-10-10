@@ -277,11 +277,30 @@ export interface ConditionSummary {
   mean_tokens: number | null;
 }
 
+export interface PairedComparison {
+  a: string;
+  b: string;
+  pairs: number;
+  a_only_pass: number;
+  b_only_pass: number;
+  p_value: number;
+}
+
+export interface GateValue {
+  condition: string;
+  own_tests_false_confidence: number;
+  caught_by_full_gates: number;
+  extra_rejections_of_correct_code: number;
+}
+
 export interface Evaluation {
   name: string;
   path: string;
-  meta: Record<string, unknown>;
+  meta: { provider?: string; reps?: number; tasks?: string[]; conditions?: string[]; [k: string]: unknown };
   conditions: ConditionSummary[];
+  paired: PairedComparison[];
+  gate_value: GateValue[];
+  per_task: Record<string, Record<string, string>>;
   pending: number;
   completed: number;
 }

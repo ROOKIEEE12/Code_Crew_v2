@@ -36,14 +36,19 @@ Three structural consequences:
 3. **Every gate re-runs after every patch**, never just the one that failed —
    directly because of the iterative-security-degradation finding above.
 
-## Status: Phases 0 and 1 complete
+## Status: all six phases built; the live evaluation is partial
 
 - **Phase 0** — the gate layer, runnable standalone with no LLM and no API key.
   This ordering is deliberate: the judge is built and validated before
   anything is judged.
 - **Phase 1** — the free-tier LLM layer, typed agent contracts, and the
-  single-agent baseline wired to the gates. This is the baseline that the
-  multi-agent architecture must beat.
+  single-agent baseline wired to the gates.
+- **Phase 2-4** — independent spec / implementer / test-author agents with
+  enforced isolation, the reconciliation loop, multi-module projects.
+- **Phase 5** — the web UI, per-file trust badges, CI export, the local API.
+- **Phase 6** — the evaluation harness and the four-way ablation. How much of
+  the study has actually run against a live model is stated in its section,
+  because a free-tier daily quota decides that, not the code.
 
 **No paid API is required at any point.** Providers are interchangeable and
 free tiers are the default: Groq, Gemini, local Ollama, or the fully offline
@@ -523,6 +528,56 @@ server; it is a local tool. Jobs live in memory (finished workspaces stay on
 disk and are listed after a restart). The UI was checked by rendering it in
 headless Edge at desktop and narrow widths, not by a user study.
 
+## Phase 6: evaluation and the four-way ablation
+
+`codecrew eval` runs the study the project's claims rest on. Two factors,
+each isolating one claim:
+
+| Factor | Levels | Claim it tests |
+|---|---|---|
+| **Architecture** (what writes code and tests) | `single`, `multi`, `multi_repair` | independent tests and the repair loop produce more correct code |
+| **Judge** (what decides "done") | `full` (every blocking gate), `own_tests` (it compiles and its own tests pass) | deep gates catch wrong code that a "tests pass" check ships |
+
+`single`/`multi` crossed with the two judges is the four-way ablation, with
+`multi_repair` reported alongside. Both judges are applied to **the same
+runs**, so the judge comparison costs no extra model calls and carries no
+generation noise: any difference is the judge's alone. The headline metric
+stays **false confidence**: claimed done, but hidden tests the pipeline
+never saw fail.
+
+**Harder tasks.** Both architectures reached 10/10 on the original suite, so
+it could not separate them. Four tasks were added
+(`codecrew/bench/hard_tasks.py`), each chosen for a rule that is easy to
+state and easy to get subtly wrong: SemVer 2.0.0 precedence, RFC 4180
+quoting, an expression evaluator written without `eval` (enforced by the
+hidden tests), and a token-bucket rate limiter on an injected clock. Each
+ships a reference solution that passes its hidden tests, and a plausible
+wrong answer that must fail them (`tests/test_bench.py`). They are kept out
+of the default `bench` suite so every earlier number stays comparable.
+
+**Benchmark change, disclosed.** The `intervals` requirement now says that
+an interval may be given as a list as well as a tuple. Its hidden test
+already required that, and the requirement was silent, which made the one
+earlier `intervals` FALSE_CONFIDENCE a benchmark defect rather than a
+pipeline one. Results for `intervals` before this change are not comparable
+with results after it.
+
+**Built for a free tier.** Every finished cell is written immediately; a
+quota error stops the study cleanly and leaves the cell pending, and the
+same command resumes. Cells run repetition-major, so a partial study is
+balanced across conditions. A study records a fingerprint of every
+requirement and hidden test and refuses to mix results from a different
+benchmark revision. Rates carry 95% Wilson intervals, and architectures are
+compared on hidden-test passes with an exact McNemar test over paired
+(task, repetition) runs.
+
+```bash
+codecrew eval --name main --reps 3          # resumable; re-run to continue
+codecrew eval --name main --report          # Markdown report + summary.json
+```
+
+<!-- EVAL-RESULTS -->
+
 ## Layout
 
 ```
@@ -578,7 +633,7 @@ only assert a gate outcome by citing one of those files.
 | 3 | Reconciliation loop: classify a failure as code / test / spec defect against the spec, patch the right artefact, full gate re-run per patch | **built and tested offline; live measurement partial** (Groq daily quota) |
 | 4 | Architect, multi-module projects, dependency sanity gate | **built and tested offline; not yet measured live** |
 | 5 | Web UI (Next.js instead of the planned Streamlit), per-file trust badges, CI export, usage guide, local API | **done** |
-| 6 | Full evaluation + four-way ablation study | |
+| 6 | Evaluation harness + four-way ablation (architecture x judge), harder tasks | **harness built and tested; live study partial** (see Phase 6) |
 
 The LLM layer is provider-agnostic with free tiers as the default (Groq,
 Gemini, or local Ollama), so no phase requires paid API access.

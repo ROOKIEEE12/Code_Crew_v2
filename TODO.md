@@ -30,18 +30,19 @@ unmeasured today; nothing here is speculative.
       token quota) and record both outcomes in the README
 - [ ] Run `--mode project --tasks wordstats` against a live model; Phase 4 has
       only been verified with scripted models
-- [ ] Repeat each condition 3-5 times: one run per task cannot rank anything
-      (`sql_builder` passed and failed its hidden tests across identical runs)
-- [ ] Add harder tasks: single and multi both reach 10/10 hidden, so the suite
-      cannot separate them on correctness
+- [x] **Phase 6 harness**: `codecrew eval`, resumable across quota resets,
+      architecture x judge ablation, Wilson intervals, exact McNemar
+- [x] Four harder tasks (semver, csv_line, expr_eval, token_bucket), each
+      validated against a reference and a known-wrong answer
+- [ ] Complete the live study: all 14 tasks x 3 conditions x 3 reps
+      (`codecrew eval --name main --reps 3`, resumes where it stopped)
 - [ ] Live-run a non-Groq provider (Gemini or Ollama); only request shapes
       are tested offline
 
 ## Benchmark integrity
 
-- [ ] `intervals`: the hidden test requires list intervals to be accepted but
-      the requirement never says so. Amend the requirement (disclosed) and
-      re-run only that task under every condition
+- [x] `intervals`: requirement amended to say lists are accepted (disclosed
+      in README); its earlier results are not comparable
 
 ## Product (after Phase 5)
 

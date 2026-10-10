@@ -323,9 +323,10 @@ def top_n(text: str, n: int) -> list[tuple[str, int]]:
             "Merge integer intervals. Each interval is a (start, end) pair "
             "with start <= end, otherwise raise ValueError. Overlapping "
             "AND touching intervals (one ends exactly where the next "
-            "starts) are merged. Return a new list of (start, end) tuples "
-            "sorted by start; never modify the input. Empty input gives "
-            "an empty list.",
+            "starts) are merged. Each interval may be given as a tuple or "
+            "as a two-element list. Return a new list of (start, end) "
+            "tuples sorted by start; never modify the input. Empty input "
+            "gives an empty list.",
             "intervals",
             "- `merge_intervals(intervals: list[tuple[int, int]]) -> "
             "list[tuple[int, int]]`",
@@ -826,12 +827,15 @@ def summarize(text: str, top: int = 3) -> dict:
 def get_tasks(ids: list[str] | None = None) -> list[Task]:
     """Return the default suite, or the named subset in the order requested.
 
-    Named lookup also searches the project tasks, which the default suite
-    deliberately does not include.
+    Named lookup also searches the hard and project tasks, which the default
+    suite deliberately does not include: adding them would make every
+    earlier ``bench`` number incomparable.
     """
+    from .hard_tasks import HARD_TASKS
+
     if not ids:
         return list(TASKS)
-    by_id = {task.id: task for task in (*TASKS, *PROJECT_TASKS)}
+    by_id = {task.id: task for task in (*TASKS, *HARD_TASKS, *PROJECT_TASKS)}
     unknown = [i for i in ids if i not in by_id]
     if unknown:
         raise KeyError(
