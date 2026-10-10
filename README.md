@@ -305,6 +305,46 @@ A disagreement between Implementer and Test-Author (own tests fail, G2) is
 reported as such rather than hidden: it means the spec was ambiguous or one
 of them was wrong, and it is the most informative failure in the pipeline.
 
+### Measured result (10 tasks, one run each, Groq `openai/gpt-oss-120b`)
+
+| | single | multi |
+|---|---|---|
+| hidden tests passed | 10/10 | 10/10 |
+| false confidence | 0 of 8 claims | 0 of 4 claims |
+| own tests green | 8/10 | **4/10** |
+| false alarms (correct code, rejected) | 2 | **6** |
+| mean mutation score | 88.9% (8 tasks) | 93.8% (4 tasks) |
+| tokens | 29,056 | 72,452 |
+
+**The hypothesis is not supported at this sample size.** The mutation means are
+over *different* task sets (G4 runs only when a workspace's own tests pass), so
+they are not comparable; on the 4 tasks both modes scored it is 92.3% vs 93.8%,
+which is noise. What the data does show is a cost: independent test authoring
+failed on 6 of 10 tasks whose implementations were all hidden-test correct, at
+2.5x the tokens. Both modes saturate the hidden tests (10/10), so this
+benchmark cannot yet separate them on correctness.
+
+Why the 6 multi-mode workspaces failed their own tests (all 10 implementations
+were correct, so these were *test or spec* defects):
+
+| cause | tasks |
+|---|---|
+| Test asserts the module's public surface, which no spec states | clamp, roman, rpn |
+| Test invents behaviour the spec leaves open (a `TypeError`) | intervals |
+| Property test with a bug of its own (divisor of 0) | rpn |
+| Environment-dependent test (symlinks need privilege on Windows) | safe_path |
+| **The spec's own example was wrong** (`'short'` listed `no_lower`) | password_policy |
+
+The last row is the approval checkpoint's case for existing: the benchmark
+auto-approves, a person reading that example would have caught it. It also
+shows that the bottleneck of independence is reconciliation, not generation:
+two agents that cannot see each other need an arbiter when they disagree, and
+the only legitimate arbiter is the spec.
+
+Run-to-run variance is real: the SQL task failed its hidden tests in one run
+(a `$` regex anchor that accepts a trailing newline) and passed in the next, same
+model, same prompt, temperature 0. One run per task cannot support a ranking.
+
 ### Gate calibration: a finding from the benchmark
 
 The first live baseline rejected a *correct* palindrome solution as
@@ -364,8 +404,8 @@ only assert a gate outcome by citing one of those files.
 |---|---|---|
 | 0 | Sandbox + gate layer + CLI, no LLM | **done** |
 | 1 | Free-tier LLM layer, typed contracts, Coder agent, single-agent baseline | **done** |
-| 2 | Spec Agent + Test-Author with context isolation, approval checkpoint, comparison harness | **built; hypothesis being measured** |
-| 3 | Diagnostician + Patcher, escalation ladder, full gate re-run per patch | |
+| 2 | Spec Agent + Test-Author with context isolation, approval checkpoint, comparison harness | **done; hypothesis not supported at n=10** |
+| 3 | Reconciliation loop: classify a failure as code / test / spec defect against the spec, patch the right artefact, full gate re-run per patch | next |
 | 4 | Architect, multi-file projects, dependency sanity check | |
 | 5 | Streamlit UI, trust badges, CI export | |
 | 6 | Full evaluation + four-way ablation study | |
