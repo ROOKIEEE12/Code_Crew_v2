@@ -14,6 +14,12 @@ Nothing here should ever be copied into real code.
 from __future__ import annotations
 
 # Hardcoded credentials: the most common defect in AI-generated code.
+#
+# These values are high-entropy but deliberately vendor-neutral. A realistic
+# prefixed key (stripe sk_live_..., AWS AKIA..., GitHub ghp_...) is rejected
+# by GitHub push protection, which blocks the whole repository from being
+# pushed - so do not make this sample "more realistic" that way. The keyword
+# name plus the entropy is what G5 detects, and that is enough.
 API_KEY = "3f8a1d6b9c20e4574af1b85d0c93e216a7d45f82"
 DB_PASSWORD = "admin123"
 
