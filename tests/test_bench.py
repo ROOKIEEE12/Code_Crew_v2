@@ -58,6 +58,28 @@ def test_a_module_that_does_nothing_fails_the_hidden_tests(task, tmp_path: Path)
     assert result.returncode != 0
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("task", TASKS, ids=lambda t: t.id)
+def test_gates_never_reject_the_reference_solution(task, tmp_path: Path):
+    """The judge must be able to pass a known-correct answer.
+
+    Found by the benchmark: bandit's B608 ("string-based SQL") fired on the
+    reference solution of the SQL task, so *every* correct answer to it was
+    rejected for the same reason. A gate that cannot pass a correct solution
+    is miscalibrated, whatever it was trying to catch. Only the static gates
+    run here, since references ship without their own tests.
+    """
+    from codecrew.config import GateConfig
+    from codecrew.gates import GateRunner
+
+    (tmp_path / f"{task.module}.py").write_text(task.reference.lstrip("\n"),
+                                                encoding="utf-8")
+    report = GateRunner(tmp_path, GateConfig(sandbox="local")).run(
+        only=["G1", "G5"])
+    blocked = [(r.gate_id, r.summary) for r in report.results if r.blocked]
+    assert not blocked, f"{task.id}: reference rejected by {blocked}"
+
+
 def test_task_ids_and_modules_are_unique():
     assert len({t.id for t in TASKS}) == len(TASKS)
     assert len({t.module for t in TASKS}) == len(TASKS)

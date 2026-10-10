@@ -7,8 +7,22 @@ import json
 from ..results import Finding, GateResult, Severity, Status
 from .base import Gate, GateContext
 
-#: Ruff rule prefixes that indicate a genuine defect rather than style.
-_DEFECT_PREFIXES = ("E9", "F8", "F6", "F7", "F4", "F5")
+#: Ruff rule prefixes that indicate a genuine defect rather than style:
+#: syntax/runtime errors (E9) and the pyflakes family (F).
+_DEFECT_PREFIXES = ("E9", "F")
+
+#: Pyflakes rules that are hygiene, not correctness. They must not block.
+#:
+#: Found by benchmark: a correct palindrome solution was rejected as
+#: UNVERIFIED for one unused `typing.Iterable` import. Because G1 gates every
+#: other check, that also meant its tests never ran, so a correct answer got
+#: no signal at all. A gate that blocks on style teaches users to ignore it.
+_HYGIENE_ONLY = frozenset({
+    "F401",  # imported but unused
+    "F841",  # local variable assigned but never used
+    "F403",  # `from x import *`
+    "F405",  # name may be undefined from star import (noisy companion of F403)
+})
 
 
 class SyntaxGate(Gate):
@@ -94,7 +108,9 @@ def _parse_ruff(stdout: str) -> list[Finding]:
     for item in items:
         code = item.get("code") or "ruff"
         location = item.get("location") or {}
-        is_defect = any(code.startswith(p) for p in _DEFECT_PREFIXES)
+        is_defect = (
+            code.startswith(_DEFECT_PREFIXES) and code not in _HYGIENE_ONLY
+        )
         findings.append(Finding(
             severity=Severity.HIGH if is_defect else Severity.LOW,
             code=f"ruff:{code}",

@@ -50,11 +50,23 @@ class AgentFailure(RuntimeError):
         self.rejections = rejections
 
 
+class ContextViolation(ValueError):
+    """An agent was handed context it is not permitted to see.
+
+    This is the structural form of the isolation rule. The Test-Author must
+    never see the implementation, and "we just did not pass it" is a
+    convention; raising here makes it a property the test suite can assert.
+    """
+
+
 class Agent(abc.ABC, Generic[T]):
     """One specialised worker with a typed output contract."""
 
     #: Stable name used in traces and the activity log.
     name: str = "agent"
+    #: The only context keys this agent may receive, all of them required.
+    #: Anything else is a :class:`ContextViolation`, not a silent extra.
+    allowed_context: frozenset[str] = frozenset()
     #: Routing hint: what kind of thinking this agent does.
     task_kind: TaskKind = TaskKind.GENERATE
     #: Contract-repair attempts before giving up.
@@ -73,8 +85,12 @@ class Agent(abc.ABC, Generic[T]):
         """The task, built from only the context this agent is allowed."""
 
     @abc.abstractmethod
-    def parse(self, text: str) -> T:
-        """Validate raw output into the typed contract, or raise ContractError."""
+    def parse(self, text: str, **context: object) -> T:
+        """Validate raw output into the typed contract, or raise ContractError.
+
+        ``context`` is the same mapping the agent was run with, so a contract
+        can check output against its input (e.g. the module name in a spec).
+        """
 
     def run(self, **context: object) -> AgentResult[T]:
         """Call the model and repair contract violations in place.
@@ -83,6 +99,25 @@ class Agent(abc.ABC, Generic[T]):
         the model is told precisely what was wrong rather than being asked
         again and hoped at.
         """
+        extra = set(context) - set(self.allowed_context)
+        if extra:
+            raise ContextViolation(
+                f"{self.name} may not receive: {', '.join(sorted(extra))} "
+                f"(allowed: {', '.join(sorted(self.allowed_context)) or 'none'})"
+            )
+        missing = set(self.allowed_context) - set(context)
+        if missing:
+            raise ContextViolation(
+                f"{self.name} requires: {', '.join(sorted(missing))}"
+            )
+        # An audit trail of exactly what each agent was shown, so isolation
+        # is checkable from the trace after the fact, not only by assertion.
+        self.tracer.event(
+            "agent_context", agent=self.name,
+            keys=sorted(context),
+            chars={k: len(str(v)) for k, v in context.items()},
+        )
+
         messages = [
             Message("system", self.system_prompt()),
             Message("user", self.user_prompt(**context)),
@@ -101,7 +136,7 @@ class Agent(abc.ABC, Generic[T]):
                 raise
 
             try:
-                output = self.parse(completion.text)
+                output = self.parse(completion.text, **context)
             except ContractError as exc:
                 rejections.append(exc.message)
                 self.tracer.event(

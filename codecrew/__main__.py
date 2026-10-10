@@ -41,6 +41,16 @@ def build_parser() -> argparse.ArgumentParser:
                        help="override the model used for reasoning tasks")
     build.add_argument("--temperature", type=float, default=0.0)
     build.add_argument("--max-tokens", type=int, default=4096)
+    build.add_argument("--mode", choices=("single", "multi"), default="multi",
+                       help="single: one agent writes code and tests (the "
+                            "baseline). multi: spec -> approval -> independent "
+                            "implementer and test author")
+    build.add_argument("--approve", choices=("ask", "auto"), default="ask",
+                       help="multi mode: pause for spec approval (ask) or "
+                            "proceed without review (auto)")
+    build.add_argument("--spec", type=Path, default=None,
+                       help="multi mode: use this spec.json instead of "
+                            "generating one (skips the Spec agent)")
     build.add_argument("--clean", action="store_true",
                        help="delete the workspace first")
     build.add_argument("--no-verify", action="store_true",
@@ -74,6 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="comma-separated gate ids to skip, e.g. G4 "
                             "(much faster, weaker verdict)")
     bench.add_argument("--max-mutants", type=int, default=None)
+    bench.add_argument("--mode", choices=("single", "multi"), default="single",
+                       help="single: one agent writes code and tests. multi: "
+                            "independent implementer and test author, spec "
+                            "auto-approved")
+
+    compare = sub.add_parser(
+        "compare", help="compare two benchmark results.json files side by side")
+    compare.add_argument("baseline", type=Path)
+    compare.add_argument("candidate", type=Path)
 
     return parser
 
@@ -106,6 +125,34 @@ def _doctor() -> int:
     return 0
 
 
+def _interactive_approver(out_dir: Path):
+    """The human checkpoint: review the spec before any code exists."""
+
+    def approve(spec):
+        print("\n" + "=" * 74)
+        print("SPECIFICATION - review before any code is written")
+        print("=" * 74)
+        print(spec.render())
+        print("=" * 74)
+        print("Pay most attention to the ASSUMPTIONS: each is a place the "
+              "requirement\nwas silent and the model had to guess.\n")
+        while True:
+            answer = input("Approve? [y]es / [n]o / [e]dit as file: ").strip().lower()
+            if answer in ("y", "yes"):
+                return spec
+            if answer in ("n", "no"):
+                return None
+            if answer in ("e", "edit"):
+                draft = out_dir / ".codecrew" / "spec.draft.json"
+                draft.parent.mkdir(parents=True, exist_ok=True)
+                draft.write_text(spec.to_json(), encoding="utf-8")
+                print(f"\nWrote {draft}\nEdit it, then re-run with "
+                      f"--spec {draft}")
+                return None
+
+    return approve
+
+
 def _build(args: argparse.Namespace) -> int:
     tiers = None
     if args.fast_model or args.strong_model:
@@ -130,10 +177,30 @@ def _build(args: argparse.Namespace) -> int:
 
     from .pipeline import Pipeline
 
+    supplied_spec = None
+    if args.spec is not None:
+        from .agents import ContractError, Spec
+
+        try:
+            supplied_spec = Spec.parse(args.spec.read_text(encoding="utf-8"))
+        except (OSError, ContractError) as exc:
+            print(f"error: cannot use spec {args.spec}: {exc}", file=sys.stderr)
+            return 2
+
+    approver = None
+    if args.mode == "multi" and args.approve == "ask":
+        if not sys.stdin.isatty():
+            print("error: spec approval needs a terminal. Re-run with "
+                  "--approve auto, or supply a reviewed --spec.",
+                  file=sys.stderr)
+            return 2
+        approver = _interactive_approver(args.out)
+
     try:
         pipeline = Pipeline(llm_config=llm_config, gate_config=gate_config)
         result = pipeline.build(
             args.requirement, args.out,
+            mode=args.mode, spec=supplied_spec, approve=approver,
             clean=args.clean, verify=not args.no_verify,
         )
     except ProviderUnavailable as exc:
@@ -184,7 +251,7 @@ def _bench(args: argparse.Namespace) -> int:
         gate_config.thresholds.max_mutants = args.max_mutants
 
     try:
-        runner = BenchRunner(llm_config, gate_config, args.out)
+        runner = BenchRunner(llm_config, gate_config, args.out, mode=args.mode)
         outcomes = runner.run(tasks)
     except ProviderUnavailable as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -195,6 +262,7 @@ def _bench(args: argparse.Namespace) -> int:
     print(render_summary(outcomes, summary))
     results = runner.out_dir / "results.json"
     write_results(outcomes, summary, results, meta={
+        "mode": args.mode,
         "provider": args.provider,
         "disabled_gates": list(gate_config.disabled),
         "max_mutants": gate_config.thresholds.max_mutants,
@@ -219,6 +287,15 @@ def main(argv: list[str] | None = None) -> int:
         return _verify(args)
     if args.command == "bench":
         return _bench(args)
+    if args.command == "compare":
+        from .bench import compare_results
+
+        try:
+            print(compare_results(args.baseline, args.candidate))
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
     return 2
 
 

@@ -119,6 +119,11 @@ def post_json(
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=body, method="POST")
     request.add_header("Content-Type", "application/json")
+    request.add_header("Accept", "application/json")
+    # urllib's default "Python-urllib/3.x" agent is rejected by Cloudflare in
+    # front of several providers (HTTP 403, error code 1010), which looks
+    # exactly like a bad API key. Identify ourselves explicitly.
+    request.add_header("User-Agent", "codecrew/0.1 (+https://github.com/ROOKIEEE12/Code_Crew_v2)")
     for key, value in (headers or {}).items():
         request.add_header(key, value)
 
@@ -135,8 +140,14 @@ def post_json(
                 retry_after_s=float(retry_after) if retry_after else None,
             ) from exc
         if exc.code in (401, 403):
+            hint = ""
+            if "1010" in detail:
+                hint = (
+                    "\n(error 1010 is a Cloudflare client-signature block, "
+                    "not a bad key: check the User-Agent and any proxy.)"
+                )
             raise ProviderUnavailable(
-                f"authentication failed (HTTP {exc.code}): {detail}"
+                f"request refused (HTTP {exc.code}): {detail}{hint}"
             ) from exc
         if exc.code == 404:
             # Almost always a retired or misspelled model name. Retrying

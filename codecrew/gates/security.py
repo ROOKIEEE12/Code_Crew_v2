@@ -91,6 +91,15 @@ def _parse_bandit(stdout: str) -> list[Finding]:
     findings = []
     for item in data.get("results", []):
         severity = _BANDIT_SEVERITY.get(item.get("issue_severity", "LOW"), Severity.LOW)
+        # Triage by confidence, as a human reviewer would. Bandit rates
+        # f-string SQL (B608) MEDIUM severity but LOW confidence even when
+        # every interpolated value was validated, so it rejected the
+        # reference solution of the SQL task - meaning no correct answer
+        # could ever pass. Low-confidence findings below HIGH stay in the
+        # report but no longer block.
+        if (item.get("issue_confidence") == "LOW"
+                and severity.rank < Severity.HIGH.rank):
+            severity = Severity.LOW
         findings.append(Finding(
             severity=severity,
             code=f"bandit:{item.get('test_id', '?')}",

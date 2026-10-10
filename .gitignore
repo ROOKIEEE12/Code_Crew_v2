@@ -15,3 +15,6 @@ coverage.json
 venv/
 .venv/
 .env
+
+# Benchmark runs: generated code and per-run results.
+bench_runs/

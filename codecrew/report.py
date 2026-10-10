@@ -86,6 +86,7 @@ def render_run(result, *, isolation: str | None = None) -> str:
         f"requirement : {_truncate(result.requirement, 56)}",
         f"workspace   : {result.workspace}",
         f"provider    : {result.provider or 'n/a'}",
+        f"mode        : {getattr(result, 'mode', 'single')}",
         f"duration    : {result.duration_s:.1f}s",
     ]
     if result.cost:
@@ -107,6 +108,11 @@ def render_run(result, *, isolation: str | None = None) -> str:
         for chunk in _wrap(result.failure, _WIDTH - 2):
             lines.append("  " + chunk)
         return "\n".join(lines + ["", "=" * _WIDTH])
+
+    spec = getattr(result, "spec", None)
+    if spec is not None:
+        lines += ["", "-" * _WIDTH, "APPROVED SPECIFICATION", "-" * _WIDTH]
+        lines += ["  " + line for line in spec.render().splitlines()]
 
     if result.submission:
         lines += ["", "-" * _WIDTH, "FILES WRITTEN", "-" * _WIDTH]

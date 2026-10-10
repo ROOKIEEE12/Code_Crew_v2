@@ -250,6 +250,70 @@ export CODECREW_MODEL_STRONG=...   CODECREW_MODEL_FAST=...
 A 404 is reported as non-retryable with this hint, rather than retried four
 times with backoff.
 
+## Phase 2: the multi-agent pipeline
+
+```
+requirement -> [Spec agent] -> spec.json -> HUMAN APPROVAL
+                                   |
+                  +----------------+----------------+
+                  v                                 v
+          [Implementer]                      [Test-Author]
+          sees: spec only                    sees: spec only
+                  \                                 /
+                   +---------> same gate layer <---+
+```
+
+`python -m codecrew build "<requirement>" --out DIR --mode multi` (the default)
+runs it; `--mode single` runs the one-agent baseline through identical gates.
+
+### Isolation is a property, not a convention
+
+Each agent declares `allowed_context`, and the base class raises
+`ContextViolation` if it is handed anything else — or is missing something it
+needs — *before any model call is made*. The Test-Author cannot be given the
+implementation; the Implementer cannot be given the tests or the raw
+requirement. The pipeline also writes an `agent_context` event per agent, so
+what each one was shown is auditable from the trace afterwards, and the test
+suite checks the actual prompts that reached the model for marker strings.
+
+Contracts reinforce it. The Implementer's output is **rejected** if it
+contains a test file (otherwise it would quietly reintroduce self-grading).
+The Test-Author's output is rejected if it contains non-test code, never
+imports the module under test, defines no `test_*` function, or contains no
+assertion — a test that cannot fail verifies nothing.
+
+### The approval checkpoint
+
+The spec is shown with its **assumptions** called out: each is a place the
+requirement was silent and the model had to guess. A person reviews roughly
+twenty lines here instead of five hundred lines of code later. Options at the
+prompt: approve, reject, or *edit* (writes `spec.draft.json`; edit it and
+re-run with `--spec`). `--approve auto` skips the prompt for scripted use.
+The spec is JSON rather than YAML so the project stays dependency-free.
+
+### What is and is not claimed
+
+Phase 2 builds the apparatus for the project's central hypothesis — that tests
+written without sight of the code detect more injected bugs than tests the
+implementer wrote about its own work. **It does not assert the hypothesis.**
+`python -m codecrew compare A/results.json B/results.json` puts the two modes
+side by side on hidden-test pass rate, mutation score, branch coverage and
+false-confidence rate. With 10 tasks and one run each, differences of a single
+task are within noise, and the output says so.
+
+A disagreement between Implementer and Test-Author (own tests fail, G2) is
+reported as such rather than hidden: it means the spec was ambiguous or one
+of them was wrong, and it is the most informative failure in the pipeline.
+
+### Gate calibration: a finding from the benchmark
+
+The first live baseline rejected a *correct* palindrome solution as
+`UNVERIFIED` because of one unused `typing.Iterable` import. Worse, because G1
+gates the tests, its tests never ran, so a correct answer received no signal
+at all. Pure hygiene rules (`F401`, `F841`, `F403`, `F405`) are now reported
+but no longer block; real defects (undefined names, redefinitions, broken
+formatting) still do. A gate that blocks on style teaches people to ignore it.
+
 ### Offline, reproducible runs
 
 `--provider scripted --script <file.json>` replays canned responses, so the
@@ -286,7 +350,7 @@ samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
   replays/           canned responses for offline demos
-tests/               CodeCrew's own suite (152 tests)
+tests/               CodeCrew's own suite (209 tests)
 ```
 
 Evidence for every claim is written to
@@ -300,7 +364,7 @@ only assert a gate outcome by citing one of those files.
 |---|---|---|
 | 0 | Sandbox + gate layer + CLI, no LLM | **done** |
 | 1 | Free-tier LLM layer, typed contracts, Coder agent, single-agent baseline | **done** |
-| 2 | Spec Agent + Test-Author with context isolation; prove the mutation score beats coder-written tests | next |
+| 2 | Spec Agent + Test-Author with context isolation, approval checkpoint, comparison harness | **built; hypothesis being measured** |
 | 3 | Diagnostician + Patcher, escalation ladder, full gate re-run per patch | |
 | 4 | Architect, multi-file projects, dependency sanity check | |
 | 5 | Streamlit UI, trust badges, CI export | |

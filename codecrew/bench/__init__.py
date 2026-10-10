@@ -9,6 +9,7 @@ from .runner import (
     BenchRunner,
     BenchSummary,
     TaskOutcome,
+    compare_results,
     render_summary,
     summarize,
     write_results,
@@ -16,6 +17,7 @@ from .runner import (
 from .tasks import TASKS, Task, get_tasks
 
 __all__ = [
+    "compare_results",
     "TASKS",
     "Task",
     "get_tasks",

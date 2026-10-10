@@ -67,6 +67,7 @@ class CoderAgent(Agent[CodeSubmission]):
 
     name = "coder"
     task_kind = TaskKind.GENERATE
+    allowed_context = frozenset({"requirement"})
 
     def system_prompt(self) -> str:
         return _SYSTEM
@@ -77,5 +78,5 @@ class CoderAgent(Agent[CodeSubmission]):
             raise ValueError("CoderAgent requires a non-empty 'requirement'")
         return _USER.format(requirement=requirement.strip())
 
-    def parse(self, text: str) -> CodeSubmission:
+    def parse(self, text: str, **context: object) -> CodeSubmission:
         return CodeSubmission.parse(text, require_tests=True)
