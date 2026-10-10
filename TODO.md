@@ -19,6 +19,10 @@ unmeasured today; nothing here is speculative.
       G8 dependency check, per-module repair, `wordstats` project task
 - [x] Live Groq run of single and multi on all 10 tasks; first live
       reconciliation fix (`password_policy`)
+- [x] **Phase 5** Next.js web UI (spec review, live gate board, activity
+      log), local API (`codecrew serve`), per-file trust badges, USAGE.md
+      from the spec, CI export, `codecrew` console script
+- [x] Verdict discloses an auto-approved spec with open assumptions
 
 ## Measurement (results that are still missing)
 
@@ -38,17 +42,15 @@ unmeasured today; nothing here is speculative.
 - [ ] `intervals`: the hidden test requires list intervals to be accepted but
       the requirement never says so. Amend the requirement (disclosed) and
       re-run only that task under every condition
-- [ ] Verdict should say when the spec was auto-approved with open
-      assumptions ("VERIFIED against an unreviewed spec, N assumptions"), so
-      a green badge does not overstate what was checked
 
-## Product (Phase 5)
+## Product (after Phase 5)
 
-- [ ] Streamlit UI: requirement, plan/spec approval, live gate progress
-- [ ] Trust badge per file (Verified / Partially verified / Unverified)
-- [ ] CI export: generate a GitHub Actions workflow that runs the same gates
-- [ ] Installable entry point (`codecrew` console script); `pyproject.toml`
-      has no `[project.scripts]` yet
+- [ ] The exported CI workflow has not yet run on GitHub Actions itself;
+      run it once on a real repository and record the result
+- [ ] Jobs live in server memory; a restart loses in-flight jobs (finished
+      workspaces stay on disk and are listed)
+- [ ] Browser end-to-end test of the UI (today: logic unit tests, typecheck,
+      static build, and a manual headless-Edge render)
 
 ## Hardening
 

@@ -24,8 +24,16 @@ PY="$HOME/.codecrew/venv/Scripts/python.exe"      # Windows; bin/python elsewher
 | Full lint (advisory) | `"$PY" -m ruff check codecrew tests` |
 | Verify a workspace | `python -m codecrew.gates run <dir>` |
 | Provider status | `python -m codecrew doctor` |
+| API + built UI | `python -m codecrew serve` (http://127.0.0.1:8765) |
+| UI typecheck / tests | `npm --prefix web run typecheck` / `npm --prefix web test` |
+| UI build (static export to `web/out`) | `npm --prefix web run build` |
+| UI dev server (:3000, talks to :8765) | `npm --prefix web run dev` |
 
-There is no build step and no package manager beyond pip/`pyproject.toml`.
+The Python side has no build step and no dependency beyond the standard
+library. The UI in `web/` is Next.js (TypeScript, Tailwind), built as a
+static export that `codecrew serve` hosts; pin exact versions in
+`web/package.json` and commit `package-lock.json`. Never commit `web/out`,
+`web/.next` or `web/node_modules`.
 The full lint currently reports a few old style findings (unused import,
 lambda assignment); those are not defects and do not block a commit. Do not
 "fix" them as a drive-by inside an unrelated change.
@@ -76,6 +84,11 @@ checks, and never force-pushes. Disable it with
   calibration are what the reported numbers mean. If you change one, say so
   in the commit message and in the README, because earlier numbers are then
   no longer comparable.
+- **The UI may not claim more than the report.** Badges, notes and USAGE.md
+  are derived from the gate report and the spec only; no model writes
+  anything shown after verification.
+- **The local server runs generated code.** Keep the loopback bind, Host and
+  Origin checks, JSON-only writes and `--root` confinement intact.
 - **Never put a realistic vendor-prefixed key in a sample.** GitHub push
   protection rejects the whole push (it already happened once).
 - Report outcomes faithfully: a failing test or a negative result is written
@@ -87,6 +100,8 @@ checks, and never force-pushes. Disable it with
 `codecrew/agents/` typed-contract agents; `codecrew/pipeline.py`
 single/multi/project builds; `codecrew/repair.py` the reconciliation loop;
 `codecrew/bench/` tasks with hidden tests and the false-confidence metric;
+`codecrew/badges.py`, `docs.py`, `ci_export.py` the Phase 5 surface;
+`codecrew/server/` the local API; `web/` the Next.js UI;
 `tests/` the suite; `samples/` one passing and one deliberately bad workspace.
 `README.md` has the measured results and the known limitations; keep it
 honest. `TODO.md` is the task list.
