@@ -74,6 +74,71 @@ def render(report: GateReport, *, show_findings: bool = True,
     return "\n".join(lines)
 
 
+def render_run(result, *, isolation: str | None = None) -> str:
+    """Render a full pipeline run: what was built, then how it was judged.
+
+    The agent's self-assessment is printed under an explicit "unverified
+    claim" heading. It is often useful, but it is an opinion from the thing
+    being judged, and the layout must never let it read as a result.
+    """
+    lines = ["=" * _WIDTH, "CODECREW RUN", "=" * _WIDTH]
+    lines += [
+        f"requirement : {_truncate(result.requirement, 56)}",
+        f"workspace   : {result.workspace}",
+        f"provider    : {result.provider or 'n/a'}",
+        f"duration    : {result.duration_s:.1f}s",
+    ]
+    if result.cost:
+        lines.append(
+            f"model cost  : {result.cost.get('llm_calls', 0)} call(s), "
+            f"{result.cost.get('total_tokens', 0)} token(s), "
+            f"{result.cost.get('retries', 0)} retry/retries"
+        )
+    lines.append(f"agent       : {result.agent_attempts} attempt(s)")
+    if result.contract_rejections:
+        lines.append(f"              {len(result.contract_rejections)} contract "
+                     f"rejection(s) repaired:")
+        for rejection in result.contract_rejections:
+            lines.append(f"                - {_truncate(rejection, 60)}")
+
+    if result.failure:
+        lines += ["", f"VERDICT     : {result.verdict}", "",
+                  "-" * _WIDTH, "FAILURE", "-" * _WIDTH]
+        for chunk in _wrap(result.failure, _WIDTH - 2):
+            lines.append("  " + chunk)
+        return "\n".join(lines + ["", "=" * _WIDTH])
+
+    if result.submission:
+        lines += ["", "-" * _WIDTH, "FILES WRITTEN", "-" * _WIDTH]
+        for file in result.submission.files:
+            tag = "test" if file.is_test else "source"
+            lines.append(f"  [{tag:6}] {file.path}  "
+                         f"({len(file.content.splitlines())} lines)")
+        if result.submission.notes:
+            lines += ["", "  approach: " + "\n            ".join(
+                _wrap(result.submission.notes, _WIDTH - 14))]
+
+    if result.report is not None:
+        lines += ["", render(result.report, isolation=isolation)]
+
+    claim = result.unverified_claim()
+    if claim:
+        lines += ["", "-" * _WIDTH,
+                  "UNVERIFIED CLAIM (the agent's own opinion, not a result)",
+                  "-" * _WIDTH]
+        for chunk in _wrap(claim, _WIDTH - 2):
+            lines.append("  " + chunk)
+
+    return "\n".join(lines)
+
+
+def _truncate(text: str, limit: int) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= limit:
+        return single_line
+    return single_line[: limit - 3] + "..."
+
+
 def _findings(report: GateReport, max_findings: int) -> list[str]:
     lines: list[str] = []
     for result in report.results:

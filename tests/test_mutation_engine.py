@@ -85,6 +85,32 @@ def test_docstrings_are_never_mutated():
     assert "A docstring." in mutate(source, find(source, "constant"))
 
 
+def test_exception_messages_are_never_mutated():
+    """Equivalent mutants: blanking a message changes no behaviour."""
+    source = (
+        "def f(n):\n"
+        "    if n < 1:\n"
+        '        raise ValueError("n must be at least 1")\n'
+        "    return n\n"
+    )
+    for index, (op, desc) in enumerate(sites_for(source)):
+        assert "n must be at least 1" not in desc
+        # The message survives every mutant of this function.
+        assert "n must be at least 1" in mutate(source, index)
+
+
+def test_the_raise_condition_is_still_mutated():
+    """Only the message string is exempt, not the logic guarding it."""
+    source = (
+        "def f(n):\n"
+        "    if n < 1:\n"
+        '        raise ValueError("too small")\n'
+        "    return n\n"
+    )
+    operators = {op for op, _ in sites_for(source)}
+    assert "comparison" in operators
+
+
 def test_annotations_are_never_mutated():
     source = "def f(a: int = 1) -> int:\n    return a\n"
     # The default value is behaviour and may be mutated; the annotations are

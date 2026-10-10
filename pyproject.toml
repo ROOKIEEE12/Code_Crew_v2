@@ -16,6 +16,9 @@ dev = ["pytest>=8.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "slow: runs the real gate layer in a sandbox (tens of seconds)",
+]
 
 [tool.ruff]
 line-length = 90

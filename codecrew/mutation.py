@@ -102,6 +102,28 @@ def _docstring_nodes(tree: ast.Module) -> set[int]:
     return ids
 
 
+def _raise_message_nodes(tree: ast.Module) -> set[int]:
+    """Identify string literals used as exception messages.
+
+    Mutating ``raise ValueError("too small")`` into ``raise ValueError("")``
+    produces an *equivalent mutant*: the program's behaviour is unchanged
+    except for human-readable text, so a well-written suite that asserts on
+    the exception type legitimately does not catch it. Counting those as
+    survivors understates the real mutation score, so they are excluded.
+
+    Note this filter applies only to strings; mutating the *type* raised or
+    the condition that triggers it is still a genuine mutation.
+    """
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise) or node.exc is None:
+            continue
+        for child in ast.walk(node.exc):
+            if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                ids.add(id(child))
+    return ids
+
+
 def _annotation_nodes(tree: ast.Module) -> set[int]:
     """Constants inside annotations are types, not behaviour."""
     ids: set[int] = set()
@@ -116,7 +138,11 @@ def _annotation_nodes(tree: ast.Module) -> set[int]:
 def plan_file(source: str) -> _Plan:
     """Parse ``source`` and enumerate every mutation candidate in walk order."""
     tree = ast.parse(source)
-    skip = _docstring_nodes(tree) | _annotation_nodes(tree)
+    skip = (
+        _docstring_nodes(tree)
+        | _annotation_nodes(tree)
+        | _raise_message_nodes(tree)
+    )
     candidates: list[tuple[ast.AST, str, str]] = []
 
     for node in ast.walk(tree):
