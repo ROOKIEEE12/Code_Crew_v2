@@ -1,8 +1,11 @@
-"""CodeCrew CLI: ``python -m codecrew <command>``.
+"""CodeCrew CLI: ``codecrew <command>`` or ``python -m codecrew <command>``.
 
     doctor                      which LLM providers are usable right now
     build "<requirement>"       generate, then verify, into a workspace
     verify <workspace>          run the gates only (same as codecrew.gates)
+    ci-export [repo]            write a GitHub Actions workflow for the gates
+    serve                       local API + web UI
+    bench / compare / eval      the benchmark and the ablation study
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from .sandbox import docker_available, get_sandbox
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m codecrew",
+        prog="codecrew",
         description="CodeCrew: generate code and verify it before you trust it.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -72,6 +75,51 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify = sub.add_parser("verify", help="run the gates over an existing workspace")
     verify.add_argument("workspace", type=Path)
+    verify.add_argument("--sandbox", choices=("auto", "docker", "local"),
+                        default=None)
+    verify.add_argument("--disable", default=None,
+                        help="comma-separated gate ids to skip")
+    verify.add_argument("--json", type=Path, default=None,
+                        help="also write the machine-readable report here")
+    verify.add_argument("--markdown", type=Path, default=None,
+                        help="also append a Markdown summary here")
+    verify.add_argument("--quiet", action="store_true")
+
+    ci = sub.add_parser(
+        "ci-export",
+        help="write a GitHub Actions workflow that re-runs the gates on "
+             "every push")
+    ci.add_argument("repo", type=Path, nargs="?", default=Path("."),
+                    help="repository root to write .github/workflows/ into")
+    ci.add_argument("--workspace", default=".",
+                    help="the code to verify, relative to the repo root")
+    ci.add_argument("--source", default=None,
+                    help="pip source for CodeCrew (default: this project's "
+                         "GitHub repository)")
+    ci.add_argument("--ref", default="main",
+                    help="branch, tag or commit SHA of CodeCrew to install")
+    ci.add_argument("--python", default="3.12")
+    ci.add_argument("--disable", default=None,
+                    help="comma-separated gate ids to skip in CI")
+    ci.add_argument("--force", action="store_true",
+                    help="overwrite an existing workflow")
+    ci.add_argument("--print", dest="print_only", action="store_true",
+                    help="print the workflow instead of writing it")
+
+    serve = sub.add_parser(
+        "serve", help="run the local API (and the web UI, when it is built)")
+    serve.add_argument("--host", default="127.0.0.1",
+                       help="bind address; keep it on loopback")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--root", type=Path, action="append", default=None,
+                       help="directory builds are written to and the only "
+                            "place `verify` may read from (repeatable; "
+                            "default ~/codecrew-workspaces)")
+    serve.add_argument("--ui", type=Path, default=None,
+                       help="static UI to serve (default: web/out if built)")
+    serve.add_argument("--allow-origin", action="append", default=None,
+                       help="extra browser origin allowed to call the API "
+                            "(the Next.js dev server is allowed by default)")
 
     bench = sub.add_parser(
         "bench",
@@ -330,7 +378,43 @@ def _bench(args: argparse.Namespace) -> int:
 def _verify(args: argparse.Namespace) -> int:
     from .gates.__main__ import main as gates_main
 
-    return gates_main(["run", str(args.workspace)])
+    forwarded = ["run", str(args.workspace)]
+    for flag in ("sandbox", "disable", "json", "markdown"):
+        value = getattr(args, flag)
+        if value is not None:
+            forwarded += [f"--{flag}", str(value)]
+    if args.quiet:
+        forwarded.append("--quiet")
+    return gates_main(forwarded)
+
+
+def _ci_export(args: argparse.Namespace) -> int:
+    from .ci_export import DEFAULT_SOURCE, export_workflow, render_workflow
+
+    options = dict(
+        workspace=args.workspace, source=args.source or DEFAULT_SOURCE,
+        ref=args.ref, python=args.python,
+        disable=tuple(p.strip().upper() for p in (args.disable or "").split(",")
+                      if p.strip()),
+    )
+    try:
+        if args.print_only:
+            print(render_workflow(**options), end="")
+            return 0
+        path = export_workflow(args.repo, force=args.force, **options)
+    except (ValueError, FileExistsError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"wrote {path}")
+    print("Commit it, and every push and pull request re-runs the gates.")
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    from .server import serve
+
+    return serve(host=args.host, port=args.port, roots=args.root,
+                 ui_dir=args.ui, extra_origins=args.allow_origin or [])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -341,6 +425,10 @@ def main(argv: list[str] | None = None) -> int:
         return _build(args)
     if args.command == "verify":
         return _verify(args)
+    if args.command == "ci-export":
+        return _ci_export(args)
+    if args.command == "serve":
+        return _serve(args)
     if args.command == "bench":
         return _bench(args)
     if args.command == "compare":

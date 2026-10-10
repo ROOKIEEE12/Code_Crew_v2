@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 from ..config import WORK_DIR_NAME, GateConfig
 from ..results import GateReport, GateResult, Status
@@ -45,10 +46,22 @@ class GateRunner:
         workspace: Path,
         config: GateConfig | None = None,
         sandbox: Sandbox | None = None,
+        progress: Callable[[dict], None] | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.config = config or GateConfig()
         self._sandbox = sandbox
+        #: Told when each gate starts and finishes. Purely an observer: it
+        #: receives copies of the outcome and cannot change it.
+        self._progress = progress
+
+    def _notify(self, **event) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress(event)
+        except Exception:  # noqa: BLE001 - a UI must never break a verdict
+            pass
 
     def run(self, only: list[str] | None = None, run_id: str | None = None) -> GateReport:
         run_id = run_id or time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
@@ -72,19 +85,18 @@ class GateRunner:
             if not gate.applicable(ctx):
                 continue
             if not self.config.is_enabled(gate_id):
-                report.results.append(_disabled(gate, self.config))
-                statuses[gate_id] = Status.SKIP
-                continue
-
-            blocker = _unmet_dependency(gate, statuses)
-            if blocker:
-                report.results.append(_blocked(gate, self.config, blocker))
-                statuses[gate_id] = Status.SKIP
-                continue
-
-            result = gate.execute(ctx)
+                result = _disabled(gate, self.config)
+            elif blocker := _unmet_dependency(gate, statuses):
+                result = _blocked(gate, self.config, blocker)
+            else:
+                self._notify(phase="start", gate=gate_id, name=gate.name)
+                result = gate.execute(ctx)
             report.results.append(result)
             statuses[gate_id] = result.status
+            self._notify(phase="end", gate=gate_id, name=gate.name,
+                         status=result.status.value, summary=result.summary,
+                         score=result.score, blocking=result.blocking,
+                         note=result.note)
 
         report.duration_s = time.monotonic() - started
         return report

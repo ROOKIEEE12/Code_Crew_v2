@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "codecrew"
 version = "0.1.0"
@@ -8,6 +12,12 @@ requires-python = ">=3.10"
 # the gates are pinned in codecrew/config.py and installed into the sandbox,
 # not into this project's environment.
 dependencies = []
+
+[project.scripts]
+codecrew = "codecrew.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["codecrew*"]
 
 [project.optional-dependencies]
 # For running CodeCrew's own test suite on a machine without the sandbox.

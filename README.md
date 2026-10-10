@@ -70,6 +70,14 @@ python -m codecrew build "Build an in-memory URL shortener" \
 # Generate and verify with a real free-tier model
 export GROQ_API_KEY=...      # or GEMINI_API_KEY, or run Ollama
 python -m codecrew build "Build a CSV column summariser" --out /tmp/csvtool
+
+# The web UI: spec review, live gate board, per-file trust badges
+(cd web && npm ci && npm run build)  # once; needs Node 20+
+pip install -e .                     # the `codecrew` command
+codecrew serve                       # open http://127.0.0.1:8765
+
+# Re-run the same gates in GitHub Actions on every push
+codecrew ci-export .
 ```
 
 Gate flags: `--only G1,G2`, `--disable G4`, `--sandbox docker`,
@@ -454,6 +462,67 @@ default suite so the single-module numbers stay exactly what they were.
 - Project mode is verified offline with scripted models and real gates, and
   has **not** yet been measured against a live model.
 
+## Phase 5: the product surface
+
+The verdict was already honest in the terminal. Phase 5 puts it in front of
+the people the project is for (a beginner who would otherwise ship whatever
+the AI wrote) without letting the friendlier surface claim more than the
+gates did.
+
+```bash
+pip install -e .                      # gives you the `codecrew` command
+codecrew serve                        # API + UI on http://127.0.0.1:8765
+# UI development, with hot reload on :3000:
+cd web && npm ci && npm run dev
+```
+
+**Web UI (Next.js, `web/`).** Type a requirement, pick single / multi /
+project mode, then watch it run: a stage stepper, the **spec review** (the
+human checkpoint, with every assumption the model had to guess highlighted
+and an "edit as JSON" escape hatch), a live **G1-G8 gate board**, and the
+activity log, which lists each agent with exactly the inputs it was allowed
+to see ("Implementer was given only: spec"). The result view shows the
+verdict, the per-file badges with their reasons, the code, every finding,
+the repair log, USAGE.md and the CI workflow. The UI is a static export
+served by `codecrew serve` itself, so running it needs no Node process.
+
+**Per-file trust badges** (`codecrew/badges.py`). VERIFIED / PARTIALLY
+VERIFIED / UNVERIFIED per source file, derived only from the gate report: a
+failing test is attributed to the module it tests, a failure nobody can place
+leaves every file unverified, and a file's badge is never better than the
+workspace verdict (asserted over every combination of gate outcomes in
+`tests/test_phase5.py`).
+
+**Unreviewed specs are disclosed.** When the spec was auto-approved with open
+assumptions, the verdict reads "VERIFIED against an unreviewed spec with 2
+open assumptions": the gates check code against the spec, and nobody checked
+the spec against what the user meant.
+
+**USAGE.md, written without a model** (`codecrew/docs.py`). The synopsis
+assigns documentation to a Review/Documentation agent. It is done
+deterministically instead: a model writing prose after verification could
+describe behaviour nothing checked. The guide is rendered from the approved
+spec, and its examples are described as "executed" only when G7 ran them and
+they matched.
+
+**CI export** (`codecrew ci-export`). Writes `.github/workflows/codecrew.yml`,
+which re-runs the same gates on every push and pull request and puts the
+Markdown report in the job summary. No model and no API key are involved in
+CI. Values that could inject shell into the workflow are refused.
+
+**The local API** (`codecrew/server/`, standard library only). It runs
+generated code, so it is locked to the person at the machine: loopback bind,
+loopback-only `Host` header (DNS rebinding), browser `Origin` allowlist,
+JSON-only writes (no cross-site form posts), paths confined to `--root`, and
+scripted runs may only replay bundled files. An unanswered approval times out
+as a rejection, never an approval. Jobs run one at a time because they share
+the free-tier quota and the sandbox.
+
+**What Phase 5 does not do:** there are no accounts and no multi-user
+server; it is a local tool. Jobs live in memory (finished workspaces stay on
+disk and are listed after a restart). The UI was checked by rendering it in
+headless Edge at desktop and narrow widths, not by a user study.
+
 ## Layout
 
 ```
@@ -461,10 +530,16 @@ codecrew/
   config.py          thresholds and gate toggles (all tunable for ablations)
   results.py         Status/Severity/Finding/GateResult/GateReport + verdict policy
   mutation.py        the AST mutation engine
-  report.py          verification report + run report
+  report.py          verification report + run report (+ Markdown for CI)
   trace.py           JSONL tracing: every call, retry, gate and cost
-  pipeline.py        Phase 1 orchestration: requirement -> code -> gates
-  __main__.py        CLI: doctor | build | verify
+  pipeline.py        orchestration: single / multi / project builds
+  repair.py          the reconciliation loop
+  badges.py          per-file trust badges and the review caveat
+  docs.py            USAGE.md, rendered from the spec (no model)
+  ci_export.py       GitHub Actions workflow for the gates
+  __main__.py        CLI: doctor | build | verify | bench | compare | eval | ci-export | serve
+  server/            local HTTP API: jobs, approvals, live progress
+  bench/             tasks with hidden tests, runner, ablation study
   sandbox/           base contract, docker backend, local-venv backend
   llm/
     base.py          Provider contract, urllib transport, error taxonomy
@@ -480,11 +555,12 @@ codecrew/
     security.py      G5      mutation.py  G4      properties.py G6
     runner.py        sequencing, dependency skips, aggregation
     __main__.py      CLI
+web/                 Next.js UI (static export, served by `codecrew serve`)
 samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
   replays/           canned responses for offline demos
-tests/               CodeCrew's own suite (344 tests)
+tests/               CodeCrew's own suite
 ```
 
 Evidence for every claim is written to
@@ -501,7 +577,7 @@ only assert a gate outcome by citing one of those files.
 | 2 | Spec Agent + Test-Author with context isolation, approval checkpoint, comparison harness | **done; hypothesis not supported at n=10** |
 | 3 | Reconciliation loop: classify a failure as code / test / spec defect against the spec, patch the right artefact, full gate re-run per patch | **built and tested offline; live measurement partial** (Groq daily quota) |
 | 4 | Architect, multi-module projects, dependency sanity gate | **built and tested offline; not yet measured live** |
-| 5 | Streamlit UI, trust badges, CI export | |
+| 5 | Web UI (Next.js instead of the planned Streamlit), per-file trust badges, CI export, usage guide, local API | **done** |
 | 6 | Full evaluation + four-way ablation study | |
 
 The LLM layer is provider-agnostic with free tiers as the default (Groq,
@@ -522,14 +598,12 @@ verification:
 - **G6 measures reachability, not quality.** It checks that a property test
   references a function, not that the property asserted is meaningful. It is
   advisory for that reason.
-- **No debug loop yet.** Phase 1 generates once and reports. A failing verdict
-  is not yet repaired automatically; that is Phase 3.
-- **The baseline number does not exist yet.** The benchmark harness is built
-  and validated, but no live model has been run through it, because that
-  needs a free API key. Until `bench` is run with a real provider, the
-  single-agent baseline is unmeasured and no comparison claim can be made.
-- **Live providers are tested by request shape only.** Payloads and response
-  parsing are asserted offline; no real endpoint has been called.
+- **Only Groq has been run live.** Gemini and Ollama payloads and response
+  parsing are asserted offline; no real Gemini or Ollama endpoint has been
+  called.
+- **Small samples.** Every measured number in this README comes from one run
+  per task on a handful of tasks, under a free-tier daily token quota. See
+  the evaluation section for what that does and does not support.
 
 ## Development workflow
 
@@ -541,8 +615,9 @@ Working conventions live in [`CLAUDE.md`](CLAUDE.md) and open work in
    (`stop_hook_active`), so it cannot loop;
 2. refuses on `main`/`master`, and refuses secrets, key files and generated
    output;
-3. runs `compileall`, a defect-only `ruff` pass and the fast test subset, and
-   hands any failure back to the agent instead of committing;
+3. runs `compileall`, a defect-only `ruff` pass and the fast test subset
+   (plus the UI's typecheck and tests when `web/` changed), and hands any
+   failure back to the agent instead of committing;
 4. commits with a conventional message, then `git push origin HEAD`.
 
 It never force-pushes, amends, rewrites history, sets dates or creates empty

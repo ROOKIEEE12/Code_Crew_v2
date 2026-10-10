@@ -180,6 +180,33 @@ def test_failing_lint_blocks_the_commit(repo):
     assert commits(work) == before
 
 
+def test_a_web_change_without_its_dependencies_is_not_committed(repo):
+    work, _ = repo
+    (work / "web").mkdir()
+    edit(work, "export const x = 1;\n", "web/page.tsx")
+    before = commits(work)
+    done = run_hook(work)
+    assert done.returncode == 2 and "npm ci" in done.stderr
+    assert commits(work) == before
+
+
+def test_failing_web_checks_block_the_commit(repo):
+    work, _ = repo
+    (work / "web").mkdir()
+    edit(work, "export const x: number = 'a';\n", "web/page.tsx")
+    before = commits(work)
+    done = run_hook(work, AUTO_COMMIT_WEB_CMD="echo 'TS2322'; false")
+    assert done.returncode == 2 and "web FAILED" in done.stderr
+    assert commits(work) == before
+
+
+def test_web_checks_only_run_when_web_changed(repo):
+    work, _ = repo
+    edit(work)  # a Python-only change; no web/node_modules exists
+    done = run_hook(work, AUTO_COMMIT_WEB_CMD="false")
+    assert done.returncode == 0, done.stderr
+
+
 # -- secrets and generated files -------------------------------------------------
 
 @pytest.mark.parametrize("name", [

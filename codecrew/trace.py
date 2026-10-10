@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class Tracer:
@@ -28,7 +28,16 @@ class Tracer:
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self._lock = threading.Lock()
         self._started = time.monotonic()
+        self._listeners: list[Callable[[dict], None]] = []
         self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def subscribe(self, listener: Callable[[dict], None]) -> None:
+        """Also hand every event to ``listener`` (the UI's live progress).
+
+        The JSONL file stays the record of truth; a listener only observes,
+        and one that raises is ignored rather than allowed to stop a run.
+        """
+        self._listeners.append(listener)
 
     def event(self, kind: str, **fields: Any) -> None:
         record = {
@@ -41,6 +50,11 @@ class Tracer:
         with self._lock:
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
+        for listener in list(self._listeners):
+            try:
+                listener(json.loads(line))
+            except Exception:  # noqa: BLE001 - observers must not break a run
+                continue
 
     def read(self) -> list[dict]:
         """Load the events back, for the run summary and the evaluation."""
@@ -78,6 +92,7 @@ class NullTracer(Tracer):
         self.run_id = "null"
         self._lock = threading.Lock()
         self._started = time.monotonic()
+        self._listeners = []
 
     def event(self, kind: str, **fields: Any) -> None:
         return

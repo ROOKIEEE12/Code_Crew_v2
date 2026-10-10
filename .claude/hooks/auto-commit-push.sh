@@ -18,6 +18,7 @@
 #   AUTO_COMMIT_ALLOW_MAIN=1   allow committing on main/master (default: refuse)
 #   AUTO_COMMIT_LINT_CMD       override the lint command
 #   AUTO_COMMIT_TEST_CMD       override the test command
+#   AUTO_COMMIT_WEB_CMD        override the web/ checks (typecheck + tests)
 #   CODECREW_PYTHON            interpreter that has pytest and ruff
 #   CODECREW_VENV              venv directory (default ~/.codecrew/venv)
 #
@@ -101,7 +102,7 @@ forbidden_reason() {
                                        echo "credentials file"; return ;;
   esac
   case "/$p" in
-    */node_modules/*|*/.next/*|*/dist/*|*/build/*|*/__pycache__/*|*/.venv/*|*/venv/*|*/.codecrew/*|*/bench_runs/*|*/.hypothesis/*|*/.mypy_cache/*|*/.ruff_cache/*|*/.pytest_cache/*)
+    */node_modules/*|*/.next/*|*/web/out/*|*/dist/*|*/build/*|*/__pycache__/*|*/.venv/*|*/venv/*|*/.codecrew/*|*/bench_runs/*|*/.hypothesis/*|*/.mypy_cache/*|*/.ruff_cache/*|*/.pytest_cache/*)
       echo "build output, dependency or generated directory"; return ;;
   esac
   case "$lower" in
@@ -191,6 +192,20 @@ else
   note "ruff is not installed for $PY; lint skipped."
 fi
 run_check "tests" "$TEST_CMD"
+
+# The web UI has its own checks, run only when something under web/ changed.
+# Without its dependencies installed it cannot be checked, and unchecked code
+# is not committed.
+if changed_files | grep -q '^web/'; then
+  if [ -n "${AUTO_COMMIT_WEB_CMD:-}" ]; then
+    run_check "web" "$AUTO_COMMIT_WEB_CMD"
+  elif [ ! -d web/node_modules ]; then
+    fail "Files under web/ changed but web/node_modules is missing, so the UI cannot be type-checked. Run 'npm ci' in web/ and stop again."
+  else
+    run_check "web typecheck" "npm --prefix web run --silent typecheck"
+    run_check "web tests" "npm --prefix web run --silent test"
+  fi
+fi
 
 # -- 7. stage, then re-check exactly what is staged ---------------------------
 git add -A >/dev/null 2>&1 || fail "git add failed."
