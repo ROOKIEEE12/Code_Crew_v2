@@ -206,6 +206,50 @@ It is kept because it is genuinely useful, and it is quarantined because it
 comes from the thing being judged. The verdict is computed only from gate
 results.
 
+### The benchmark and the false-confidence metric
+
+`python -m codecrew bench` runs 10 self-authored tasks (4 easy, 4 medium,
+2 security: path traversal and SQL injection) and scores each result against
+**hidden tests** the agent never sees. The headline number is not accuracy
+but **false confidence**: the pipeline said the code was fine, and the hidden
+tests say it was not.
+
+| pipeline claimed | hidden tests | outcome |
+|---|---|---|
+| ok | pass | `true_pass` |
+| ok | fail | **`FALSE_CONFIDENCE`** — the failure this project exists to minimise |
+| not ok | fail | `caught` — the gates worked |
+| not ok | pass | `false_alarm` — too strict |
+
+The rate's denominator is *claims of success*, not tasks, and it is reported
+as undefined rather than 0% when nothing was claimed ok.
+
+The benchmark validates itself: every task ships a reference solution, and
+the test suite asserts all 10 pass their hidden tests (satisfiable) while an
+empty module fails them (able to say no). Without that, a low score could
+just mean a broken test.
+
+```bash
+python -m codecrew bench --list
+python -m codecrew bench --provider groq --out bench_runs/baseline
+python -m codecrew bench --disable G4 ...     # faster, weaker verdict
+```
+
+### Free-tier model names churn
+
+Hosted free-tier models are retired often: Groq retired
+`llama-3.3-70b-versatile` on 2026-08-16 and Google deprecated Gemini 2.0 Flash
+in mid-2026, which would have broken the first call. Defaults were updated
+(last checked 2026-10-10), but treat them as best-effort and override with no
+code change:
+
+```bash
+export CODECREW_MODEL_STRONG=...   CODECREW_MODEL_FAST=...
+```
+
+A 404 is reported as non-retryable with this hint, rather than retried four
+times with backoff.
+
 ### Offline, reproducible runs
 
 `--provider scripted --script <file.json>` replays canned responses, so the
@@ -242,7 +286,7 @@ samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
   replays/           canned responses for offline demos
-tests/               CodeCrew's own suite (105 tests)
+tests/               CodeCrew's own suite (152 tests)
 ```
 
 Evidence for every claim is written to
@@ -282,6 +326,12 @@ verification:
   advisory for that reason.
 - **No debug loop yet.** Phase 1 generates once and reports. A failing verdict
   is not yet repaired automatically; that is Phase 3.
+- **The baseline number does not exist yet.** The benchmark harness is built
+  and validated, but no live model has been run through it, because that
+  needs a free API key. Until `bench` is run with a real provider, the
+  single-agent baseline is unmeasured and no comparison claim can be made.
+- **Live providers are tested by request shape only.** Payloads and response
+  parsing are asserted offline; no real endpoint has been called.
 
 ## Running CodeCrew's own tests
 

@@ -138,6 +138,15 @@ def post_json(
             raise ProviderUnavailable(
                 f"authentication failed (HTTP {exc.code}): {detail}"
             ) from exc
+        if exc.code == 404:
+            # Almost always a retired or misspelled model name. Retrying
+            # cannot help, so this is raised as non-retryable with the fix.
+            raise ProviderUnavailable(
+                f"not found (HTTP 404): {detail}\n"
+                "The model name is probably retired or misspelled. Free-tier "
+                "models change often; set CODECREW_MODEL_STRONG and "
+                "CODECREW_MODEL_FAST (or --strong-model / --fast-model)."
+            ) from exc
         raise LLMError(f"HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise ProviderUnavailable(f"network error: {exc.reason}") from exc

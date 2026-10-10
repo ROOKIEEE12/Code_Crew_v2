@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -57,14 +58,31 @@ class ModelTiers:
         return self.fast if TASK_TIERS[kind] == "fast" else self.strong
 
 
-#: Free-tier defaults per provider. A smaller, faster model handles the
-#: mechanical work so the larger one is reserved for reasoning.
+#: Free-tier defaults per provider, last checked 2026-10-10.
+#:
+#: Hosted free-tier model names churn quickly: Groq retired
+#: llama-3.3-70b-versatile on 2026-08-16 and Google deprecated Gemini 2.0
+#: Flash in mid-2026, so the previous defaults would have failed on the
+#: first call. Treat these as best-effort and override without a code change
+#: via CODECREW_MODEL_FAST / CODECREW_MODEL_STRONG or --fast-model /
+#: --strong-model.
 DEFAULT_TIERS: dict[str, ModelTiers] = {
-    "groq": ModelTiers(fast="llama-3.1-8b-instant", strong="llama-3.3-70b-versatile"),
-    "gemini": ModelTiers(fast="gemini-2.0-flash-lite", strong="gemini-2.0-flash"),
+    "groq": ModelTiers(fast="openai/gpt-oss-120b", strong="openai/gpt-oss-120b"),
+    "gemini": ModelTiers(fast="gemini-2.5-flash-lite", strong="gemini-2.5-flash"),
     "ollama": ModelTiers(fast="qwen2.5-coder:7b", strong="qwen2.5-coder:7b"),
     "anthropic": ModelTiers(fast="claude-haiku-5-5", strong="claude-sonnet-5-5"),
 }
+
+ENV_FAST = "CODECREW_MODEL_FAST"
+ENV_STRONG = "CODECREW_MODEL_STRONG"
+
+
+def _apply_env_overrides(tiers: ModelTiers) -> ModelTiers:
+    """Environment beats defaults, so a retired model is a one-line fix."""
+    return ModelTiers(
+        fast=os.environ.get(ENV_FAST) or tiers.fast,
+        strong=os.environ.get(ENV_STRONG) or tiers.strong,
+    )
 
 
 @dataclass
@@ -98,11 +116,12 @@ class LLMClient:
         self.provider = provider or select_provider(
             self.config.provider, self.config.script
         )
-        self.tiers = (
+        base_tiers = (
             self.config.tiers
             or DEFAULT_TIERS.get(self.provider.name)
             or ModelTiers()
         )
+        self.tiers = _apply_env_overrides(base_tiers)
 
     def complete(
         self,

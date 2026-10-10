@@ -27,7 +27,7 @@ class GroqProvider(Provider):
     """Groq's OpenAI-compatible endpoint. Generous free tier, very fast."""
 
     name = "groq"
-    default_model = "llama-3.3-70b-versatile"
+    default_model = "openai/gpt-oss-120b"
     free = True
     endpoint = "https://api.groq.com/openai/v1/chat/completions"
     env_var = "GROQ_API_KEY"
@@ -68,7 +68,7 @@ class GeminiProvider(Provider):
     """Google AI Studio. Free tier, separate request shape from OpenAI's."""
 
     name = "gemini"
-    default_model = "gemini-2.0-flash"
+    default_model = "gemini-2.5-flash"
     free = True
     env_var = "GEMINI_API_KEY"
 

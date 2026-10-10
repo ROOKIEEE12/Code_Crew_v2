@@ -55,6 +55,26 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="run the gates over an existing workspace")
     verify.add_argument("workspace", type=Path)
 
+    bench = sub.add_parser(
+        "bench",
+        help="run the benchmark and report the false-confidence rate",
+    )
+    bench.add_argument("--out", type=Path, default=Path("bench_runs"),
+                       help="directory for per-task workspaces and results.json")
+    bench.add_argument("--tasks", default=None,
+                       help="comma-separated task ids (default: all)")
+    bench.add_argument("--list", action="store_true", help="list tasks and exit")
+    bench.add_argument("--provider", default="auto",
+                       help="auto|groq|gemini|ollama|anthropic")
+    bench.add_argument("--fast-model", default=None)
+    bench.add_argument("--strong-model", default=None)
+    bench.add_argument("--sandbox", choices=("auto", "docker", "local"),
+                       default="auto")
+    bench.add_argument("--disable", default=None,
+                       help="comma-separated gate ids to skip, e.g. G4 "
+                            "(much faster, weaker verdict)")
+    bench.add_argument("--max-mutants", type=int, default=None)
+
     return parser
 
 
@@ -127,6 +147,62 @@ def _build(args: argparse.Namespace) -> int:
     return 0 if result.passed else 1
 
 
+def _bench(args: argparse.Namespace) -> int:
+    from .bench import (
+        TASKS,
+        BenchRunner,
+        get_tasks,
+        render_summary,
+        summarize,
+        write_results,
+    )
+
+    if args.list:
+        for task in TASKS:
+            print(f"{task.id:16} {task.tier:9} {task.module}")
+        return 0
+
+    try:
+        tasks = get_tasks(
+            [t.strip() for t in args.tasks.split(",") if t.strip()]
+            if args.tasks else None
+        )
+    except KeyError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+
+    tiers = None
+    if args.fast_model or args.strong_model:
+        tiers = ModelTiers(fast=args.fast_model, strong=args.strong_model)
+    llm_config = LLMConfig(provider=args.provider, tiers=tiers)
+    gate_config = GateConfig(sandbox=args.sandbox)
+    if args.disable:
+        gate_config.disabled = tuple(
+            p.strip().upper() for p in args.disable.split(",") if p.strip()
+        )
+    if args.max_mutants is not None:
+        gate_config.thresholds.max_mutants = args.max_mutants
+
+    try:
+        runner = BenchRunner(llm_config, gate_config, args.out)
+        outcomes = runner.run(tasks)
+    except ProviderUnavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    summary = summarize(outcomes)
+    print()
+    print(render_summary(outcomes, summary))
+    results = runner.out_dir / "results.json"
+    write_results(outcomes, summary, results, meta={
+        "provider": args.provider,
+        "disabled_gates": list(gate_config.disabled),
+        "max_mutants": gate_config.thresholds.max_mutants,
+    })
+    print(f"\nresults: {results}")
+    return 0
+
+
 def _verify(args: argparse.Namespace) -> int:
     from .gates.__main__ import main as gates_main
 
@@ -141,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         return _build(args)
     if args.command == "verify":
         return _verify(args)
+    if args.command == "bench":
+        return _bench(args)
     return 2
 
 
