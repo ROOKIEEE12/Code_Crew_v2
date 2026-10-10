@@ -152,6 +152,21 @@ def render_run(result, *, isolation: str | None = None) -> str:
     if result.report is not None:
         lines += ["", render(result.report, isolation=isolation)]
 
+    note = getattr(result, "verdict_note", None)
+    if note:
+        lines += ["", f"NOTE: {result.verdict} {note}.",
+                  "  The gates check the code against the spec; nobody checked "
+                  "the spec",
+                  "  against what you meant. Read its assumptions."]
+
+    badges = getattr(result, "badges", None)
+    if badges:
+        lines += ["", "-" * _WIDTH, "TRUST PER FILE", "-" * _WIDTH]
+        for badge in badges:
+            lines.append(f"  {badge.badge:20} {badge.path}")
+            for reason in badge.reasons[:3]:
+                lines.append(f"      - {_truncate(reason, _WIDTH - 10)}")
+
     claim = result.unverified_claim()
     if claim:
         lines += ["", "-" * _WIDTH,
@@ -161,6 +176,44 @@ def render_run(result, *, isolation: str | None = None) -> str:
             lines.append("  " + chunk)
 
     return "\n".join(lines)
+
+
+_MD_MARK = {Status.PASS: "✅ PASS", Status.FAIL: "❌ FAIL",
+            Status.SKIP: "⚪ SKIP", Status.ERROR: "⚠️ ERROR"}
+
+
+def render_markdown(report: GateReport, badges=None, *, note: str | None = None) -> str:
+    """The report as GitHub-flavoured Markdown (a CI job summary, a PR)."""
+    lines = [f"## CodeCrew: {report.verdict()}", ""]
+    if note:
+        lines += [f"> {report.verdict()} {note}.", ""]
+    lines += ["| Gate | Result | Summary |", "|---|---|---|"]
+    for result in report.results:
+        flag = "" if result.blocking else " (advisory)"
+        summary = result.summary + (f" ({result.note})" if result.note else "")
+        lines.append(f"| {result.gate_id} {result.name}{flag} | "
+                     f"{_MD_MARK[result.status]} | {_md_cell(summary)} |")
+    not_verified = _not_verified(report)
+    lines += ["", "**What was not verified**", ""]
+    lines += [f"- {line.strip()}" for line in not_verified] or [
+        "- Nothing: every gate ran and reported a result."]
+    if badges:
+        lines += ["", "**Trust per file**", "", "| File | Badge |", "|---|---|"]
+        lines += [f"| `{b.path}` | {b.badge} |" for b in badges]
+    serious = [(r, f) for r in report.results for f in r.findings
+               if f.severity.rank >= Severity.MEDIUM.rank]
+    if serious:
+        lines += ["", "<details><summary>Findings "
+                  f"({len(serious)})</summary>", ""]
+        for result, finding in serious[:40]:
+            lines.append(f"- **{result.gate_id}** `{finding.location()}` "
+                         f"{finding.code}: {_md_cell(finding.message)}")
+        lines += ["", "</details>"]
+    return "\n".join(lines) + "\n"
+
+
+def _md_cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -20,9 +20,10 @@ is recorded as an *unverified claim* and never contributes to the verdict.
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -38,7 +39,9 @@ from .agents import (
     Spec,
     TestAuthorAgent,
 )
+from .badges import FileBadge, Review, compute_badges
 from .config import WORK_DIR_NAME, GateConfig
+from .docs import render_usage, write_usage
 from .gates import GateRunner
 from .llm import LLMClient, LLMConfig
 from .repair import RepairLoop, RepairStep
@@ -99,12 +102,23 @@ class RunResult:
     #: Project mode: the architect's plan and one spec per module.
     plan: ProjectPlan | None = None
     specs: dict[str, Spec] = field(default_factory=dict)
+    #: Whether a person saw the spec (or plan) before code was written.
+    review: Review | None = None
+    #: Per-file trust, derived from the final report only.
+    badges: list[FileBadge] = field(default_factory=list)
 
     @property
     def verdict(self) -> str:
         if self.report is None:
             return "FAILED TO BUILD"
         return self.report.verdict()
+
+    @property
+    def verdict_note(self) -> str | None:
+        """What the verdict does *not* cover, when that is material."""
+        if self.report is None or self.review is None:
+            return None
+        return self.review.caveat()
 
     @property
     def passed(self) -> bool:
@@ -129,10 +143,21 @@ class Pipeline:
         llm_config: LLMConfig | None = None,
         gate_config: GateConfig | None = None,
         tracer: Tracer | None = None,
+        on_event: Callable[[dict], None] | None = None,
     ) -> None:
         self.llm_config = llm_config or LLMConfig()
         self.gate_config = gate_config or GateConfig()
         self._tracer = tracer
+        #: Observer for live progress (the web UI). Sees every trace event.
+        self._on_event = on_event
+
+    def _make_tracer(self, workspace: Path, run_id: str) -> Tracer:
+        tracer = self._tracer or Tracer(
+            workspace / WORK_DIR_NAME / "traces" / f"{run_id}.jsonl", run_id=run_id
+        )
+        if self._on_event is not None:
+            tracer.subscribe(self._on_event)
+        return tracer
 
     def build(
         self,
@@ -162,12 +187,15 @@ class Pipeline:
             shutil.rmtree(workspace)
         workspace.mkdir(parents=True, exist_ok=True)
 
-        tracer = self._tracer or Tracer(
-            workspace / WORK_DIR_NAME / "traces" / f"{run_id}.jsonl", run_id=run_id
-        )
+        tracer = self._make_tracer(workspace, run_id)
         client = LLMClient(self.llm_config, tracer=tracer)
         tracer.event("run_start", requirement=requirement[:500], mode=mode,
                      provider=client.provider.name, workspace=str(workspace))
+
+        # A spec or plan the caller supplied was written or edited by a
+        # person; an approval hook means a person is about to see it.
+        reviewed = approve is not None or spec is not None or (
+            mode == "project" and plan is not None and approve_plan is not None)
 
         def finish(**fields) -> RunResult:
             return RunResult(
@@ -254,12 +282,20 @@ class Pipeline:
                 attempts += repaired.attempts
                 rejections += repaired.rejections
 
+        spec_list = list(specs.values()) if specs else ([spec] if spec else [])
+        review = None
+        if spec_list:
+            review = Review(reviewed=reviewed, assumptions=sum(
+                len(s.assumptions) for s in spec_list))
+            review.write(workspace)
+        badges = self._finalise(workspace, report, spec_list, review, plan, tracer)
+
         tracer.event("run_end", outcome=report.verdict() if report else "not_verified")
         return finish(
             submission=submission, report=report, spec=spec,
             agent_attempts=attempts, contract_rejections=rejections,
             repairs=repairs, initial_verdict=initial_verdict,
-            plan=plan, specs=specs,
+            plan=plan, specs=specs, review=review, badges=badges,
         )
 
     def repair(
@@ -298,9 +334,7 @@ class Pipeline:
         submission = CodeSubmission(files=files)
 
         run_id = time.strftime("%Y%m%d-%H%M%S") + "-repair"
-        tracer = self._tracer or Tracer(
-            workspace / WORK_DIR_NAME / "traces" / f"{run_id}.jsonl",
-            run_id=run_id)
+        tracer = self._make_tracer(workspace, run_id)
         client = LLMClient(self.llm_config, tracer=tracer)
         tracer.event("repair_start", workspace=str(workspace), rounds=rounds)
 
@@ -323,6 +357,15 @@ class Pipeline:
             repairs = outcome.steps
             attempts, rejections = outcome.attempts, outcome.rejections
 
+        # The review status belongs to the original build; a repair does not
+        # make an unread spec read.
+        previous = Review.load(workspace)
+        review = Review(reviewed=bool(previous and previous.reviewed)
+                        or approve is not None,
+                        assumptions=len(spec.assumptions))
+        review.write(workspace)
+        badges = self._finalise(workspace, report, [spec], review, None, tracer)
+
         tracer.event("run_end", outcome=report.verdict())
         return RunResult(
             requirement="(repair of an existing workspace)",
@@ -331,7 +374,7 @@ class Pipeline:
             mode="multi", spec=spec, agent_attempts=attempts,
             contract_rejections=rejections, cost=tracer.totals(),
             provider=client.provider.name, repairs=repairs,
-            initial_verdict=initial,
+            initial_verdict=initial, review=review, badges=badges,
         )
 
     # -- project stage ---------------------------------------------------------
@@ -526,11 +569,35 @@ class Pipeline:
         if not ini.exists():
             ini.write_text(_PYTEST_INI, encoding="utf-8")
 
+    def _finalise(
+        self,
+        workspace: Path,
+        report: GateReport | None,
+        specs: list[Spec],
+        review: Review | None,
+        plan: ProjectPlan | None,
+        tracer: Tracer,
+    ) -> list[FileBadge]:
+        """Badges and the usage guide, both derived from the final report."""
+        if report is None:
+            return []
+        badges = compute_badges(report, workspace)
+        (workspace / WORK_DIR_NAME).mkdir(parents=True, exist_ok=True)
+        (workspace / WORK_DIR_NAME / "badges.json").write_text(
+            json.dumps([asdict(b) for b in badges], indent=2), encoding="utf-8")
+        tracer.event("badges", files={b.path: b.badge for b in badges})
+        if specs:
+            write_usage(workspace, render_usage(
+                specs, report, badges, review=review, plan=plan))
+        return badges
+
     def _verify(
         self, workspace: Path, sandbox: Sandbox, tracer: Tracer, run_id: str
     ) -> GateReport:
         sandbox.ensure()
-        runner = GateRunner(workspace, self.gate_config, sandbox=sandbox)
+        runner = GateRunner(
+            workspace, self.gate_config, sandbox=sandbox,
+            progress=lambda event: tracer.event("gate_progress", **event))
         report = runner.run(run_id=run_id)
         for result in report.results:
             tracer.event(

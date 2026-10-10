@@ -11,8 +11,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from ..badges import Review, compute_badges
 from ..config import WORK_DIR_NAME, GateConfig
-from ..report import render
+from ..report import render, render_markdown
 from ..sandbox import get_sandbox
 from .runner import GateRunner, all_gate_ids
 
@@ -42,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="cap the number of mutants evaluated")
     run.add_argument("--json", type=Path, default=None,
                      help="also write the machine-readable report here")
+    run.add_argument("--markdown", type=Path, default=None,
+                     help="also write a Markdown summary here (for a CI job "
+                          "summary, e.g. $GITHUB_STEP_SUMMARY)")
     run.add_argument("--quiet", action="store_true",
                      help="print only the verdict line")
 
@@ -102,10 +106,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     report.write_json(report_path)
 
+    badges = compute_badges(report, workspace) if not only else []
+    review = Review.load(workspace.resolve())
+    note = review.caveat() if review else None
+    if args.markdown:
+        # Appends, because $GITHUB_STEP_SUMMARY is shared by every step.
+        with args.markdown.open("a", encoding="utf-8") as handle:
+            handle.write(render_markdown(report, badges, note=note))
+
     if args.quiet:
         print(f"{report.verdict()}  ({report.run_id})")
     else:
         print(render(report, isolation=sandbox.isolation_notes()))
+        if note:
+            print(f"\nNOTE: {report.verdict()} {note}.")
+        if badges:
+            print("\nTRUST PER FILE")
+            for badge in badges:
+                print(f"  {badge.badge:20} {badge.path}")
         print(f"\nmachine-readable report: {report_path}")
 
     return 0 if report.passed else 1
