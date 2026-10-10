@@ -18,3 +18,11 @@ venv/
 
 # Benchmark runs: generated code and per-run results.
 bench_runs/
+
+# Local state of the auto-commit hook. Never committed.
+.claude/auto-commit.disabled
+.claude/commit-message.txt
+.claude/hooks/auto-commit.log
+.claude/hooks/.check.out
+.claude/hooks/.msg.tmp
+.claude/settings.local.json

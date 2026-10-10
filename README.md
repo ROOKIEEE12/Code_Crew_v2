@@ -484,7 +484,7 @@ samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
   replays/           canned responses for offline demos
-tests/               CodeCrew's own suite (312 tests)
+tests/               CodeCrew's own suite (344 tests)
 ```
 
 Evidence for every claim is written to
@@ -530,6 +530,30 @@ verification:
   single-agent baseline is unmeasured and no comparison claim can be made.
 - **Live providers are tested by request shape only.** Payloads and response
   parsing are asserted offline; no real endpoint has been called.
+
+## Development workflow
+
+Working conventions live in [`CLAUDE.md`](CLAUDE.md) and open work in
+[`TODO.md`](TODO.md). A Claude Code **Stop hook**
+(`.claude/hooks/auto-commit-push.sh`) turns finished work into a commit:
+
+1. does nothing if the tree is clean, or if it is itself continuing a stop
+   (`stop_hook_active`), so it cannot loop;
+2. refuses on `main`/`master`, and refuses secrets, key files and generated
+   output;
+3. runs `compileall`, a defect-only `ruff` pass and the fast test subset, and
+   hands any failure back to the agent instead of committing;
+4. commits with a conventional message, then `git push origin HEAD`.
+
+It never force-pushes, amends, rewrites history, sets dates or creates empty
+commits. A failed push (typically credentials) leaves the commit local and is
+reported rather than retried.
+
+```bash
+touch .claude/auto-commit.disabled     # turn it off (local, git-ignored)
+rm .claude/auto-commit.disabled        # turn it back on
+AUTO_COMMIT_ALLOW_MAIN=1               # explicitly allow commits on main
+```
 
 ## Running CodeCrew's own tests
 
