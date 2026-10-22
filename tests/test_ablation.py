@@ -128,6 +128,22 @@ def test_a_quota_error_stops_the_study_and_leaves_the_cell_pending(tmp_path):
     assert [c[:2] for c in resumed.calls] == [seen[2], ("multi", TWO[1].id)]
 
 
+def test_a_locked_leftover_workspace_does_not_stop_the_study(tmp_path, monkeypatch):
+    """Found live: OneDrive held an interrupted run's folder open on Windows."""
+    import shutil
+
+    from codecrew.bench.ablation import _fresh_cell_dir
+
+    leftover = tmp_path / "rep1" / "semver" / ".codecrew"
+    leftover.mkdir(parents=True)
+    assert _fresh_cell_dir(tmp_path / "rep1", "semver") == tmp_path / "rep1"
+    assert not (tmp_path / "rep1" / "semver").exists(), "removable leftovers are removed"
+
+    leftover.mkdir(parents=True)
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)  # cannot delete
+    assert _fresh_cell_dir(tmp_path / "rep1", "semver") == tmp_path / "rep1" / "attempt2"
+
+
 def test_max_cells_limits_one_invocation(tmp_path):
     s = study(tmp_path, fake_runner(TABLE))
     assert s.run(max_cells=1, log=lambda _: None) == {"ran": 1, "pending": 3, "stopped": None}

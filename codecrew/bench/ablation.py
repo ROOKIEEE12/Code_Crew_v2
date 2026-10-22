@@ -197,10 +197,41 @@ class Study:
 
     def _run_cell(self, condition: str, task: Task, out_dir: Path) -> TaskOutcome:
         mode, repair = CONDITIONS[condition]
+        out_dir = _fresh_cell_dir(out_dir, task.id)
         runner = BenchRunner(self.llm_config, self.gate_config, out_dir,
                              mode=mode, repair_rounds=repair)
         out_dir.mkdir(parents=True, exist_ok=True)
         return runner.run_task(task)
+
+
+def _fresh_cell_dir(out_dir: Path, task_id: str) -> Path:
+    """A directory where ``task_id``'s workspace can be created from scratch.
+
+    An interrupted run leaves a half-built workspace behind, and on Windows a
+    sync client or a scanner can hold it open so it cannot be deleted. That
+    must not stop the study: the leftover is removed when possible, and
+    otherwise the cell runs in a new attempt directory beside it.
+    """
+    import shutil
+    import stat
+
+    def unlock(func, path, _exc):
+        try:
+            Path(path).chmod(stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass
+
+    candidate = out_dir
+    for attempt in range(1, 20):
+        stale = candidate / task_id
+        if not stale.exists():
+            return candidate
+        shutil.rmtree(stale, onerror=unlock)
+        if not stale.exists():
+            return candidate
+        candidate = out_dir / f"attempt{attempt + 1}"
+    raise OSError(f"cannot find a clean directory for {task_id} under {out_dir}")
 
 
 # -- analysis --------------------------------------------------------------------
