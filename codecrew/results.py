@@ -155,6 +155,28 @@ class GateReport:
     def to_dict(self) -> dict:
         return dataclasses.asdict(self, dict_factory=_json_dict_factory)
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "GateReport":
+        """Rebuild a report written by :meth:`write_json` (run history)."""
+        results = []
+        for raw in data.get("results", []):
+            findings = [Finding(severity=Severity(f.get("severity", "info")),
+                                code=f.get("code", ""), message=f.get("message", ""),
+                                file=f.get("file"), line=f.get("line"))
+                        for f in raw.get("findings", [])]
+            results.append(GateResult(
+                gate_id=raw["gate_id"], name=raw.get("name", raw["gate_id"]),
+                status=Status(raw["status"]), summary=raw.get("summary", ""),
+                score=raw.get("score"), findings=findings,
+                duration_s=raw.get("duration_s", 0.0),
+                blocking=raw.get("blocking", True), evidence=raw.get("evidence"),
+                note=raw.get("note")))
+        return cls(run_id=data.get("run_id", ""), workspace=data.get("workspace", ""),
+                   sandbox=data.get("sandbox", ""), results=results,
+                   duration_s=data.get("duration_s", 0.0),
+                   sources=list(data.get("sources", [])),
+                   notes=list(data.get("notes", [])))
+
     def write_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = self.to_dict()

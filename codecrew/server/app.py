@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,20 +105,24 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self.close_connection = True
+            self._json({"error": "body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return None
+        # Always consume the body before answering, even to refuse it: a
+        # reply sent over an unread body makes some clients see a reset.
+        raw = self.rfile.read(length) if length else b""
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if ctype != "application/json":
             self._json({"error": "Content-Type must be application/json"},
                        HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
             return None
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = -1
-        if length < 0 or length > MAX_BODY:
-            self._json({"error": "body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            return None
-        try:
-            data = json.loads(self.rfile.read(length) or b"{}")
+            data = json.loads(raw or b"{}")
         except (ValueError, UnicodeDecodeError):
             self._json({"error": "body is not valid JSON"}, HTTPStatus.BAD_REQUEST)
             return None
@@ -150,6 +155,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"jobs": self.server.manager.list_jobs()})
             if url.path == "/api/workspaces":
                 return self._json({"workspaces": self.server.manager.workspaces()})
+            if url.path == "/api/projects":
+                return self._json({"projects": self.server.manager.projects()})
+            if url.path == "/api/project":
+                raw = (query.get("path") or [""])[0]
+                run = (query.get("run") or [None])[0]
+                return self._json(self.server.manager.project_detail(raw, run))
+            if url.path == "/api/project/file":
+                raw = (query.get("path") or [""])[0]
+                rel = (query.get("file") or [""])[0]
+                return self._json(self.server.manager.project_file(raw, rel))
             if url.path == "/api/workspace":
                 raw = (query.get("path") or [""])[0]
                 return self._json(self.server.manager.workspace_detail(raw))
@@ -184,6 +199,14 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/jobs":
                 job = manager.submit(body)
                 return self._json(job.detail(), HTTPStatus.CREATED)
+            if url.path in ("/api/projects", "/api/projects/remove"):
+                raw = body.get("path")
+                if not isinstance(raw, str) or not raw.strip():
+                    raise JobError("'path' must be the project's folder")
+                if url.path.endswith("/remove"):
+                    manager.remove_project(raw.strip())
+                    return self._json({"ok": True})
+                return self._json(manager.add_project(raw.strip()), HTTPStatus.CREATED)
             match = _JOB.match(url.path)
             if match and match.group(2) == "/approval":
                 job = manager.get(match.group(1))
@@ -209,11 +232,17 @@ class Handler(BaseHTTPRequestHandler):
         providers.append({"name": "scripted", "ready": True,
                           "reason": "offline replay of a bundled script"})
         manager = self.server.manager
+        from ..sandbox.local import LocalSandbox
+
+        tools = LocalSandbox(Path("."))
         return {
             "version": __version__,
+            "python": sys.version.split()[0],
             "providers": providers,
             "replays": available_replays(manager.replays_dir),
             "sandbox": {"docker": docker_available()},
+            "tools": {"ready": tools.python.exists() and tools._stamp.exists(),
+                      "path": str(tools.venv_dir)},
             "roots": [str(r) for r in manager.roots],
         }
 
