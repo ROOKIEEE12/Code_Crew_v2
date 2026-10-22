@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { notify, setTitle } from "@/lib/notify";
+
 import { GateBoard } from "@/components/GateBoard";
 import { ResultView } from "@/components/ResultView";
 import { ApprovalPanel } from "@/components/SpecReview";
@@ -48,18 +50,41 @@ export function JobView() {
     return () => clearInterval(timer);
   }, [poll, ended]);
 
+  // The tab title and a desktop notification say when the run needs the
+  // person (spec review) or has finished, so they can work elsewhere.
+  const status = job?.status;
+  const verdict = job?.result?.verdict;
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    if (!status) return;
+    if (status === "awaiting_approval") setTitle("● Review needed");
+    else if (status === "running" || status === "queued") setTitle("Running…");
+    else setTitle(verdict ?? status);
+    const key = `${status}:${verdict ?? ""}`;
+    if (seen.current !== null && seen.current !== key) {
+      if (status === "awaiting_approval") notify("CodeCrew: review needed", "The spec is ready for you to approve.");
+      if (status === "done") notify(`CodeCrew: ${verdict ?? "done"}`, job?.title ?? "");
+      if (status === "failed") notify("CodeCrew: run failed", job?.error ?? "");
+    }
+    seen.current = key;
+    return () => setTitle(null);
+  }, [status, verdict, job?.title, job?.error]);
+
   if (!id) return <p className="text-muted">No job id in the address.</p>;
   if (!job) return <p className="text-muted">{error ?? "Loading…"}</p>;
 
   const mode = String(job.params.mode ?? (job.kind === "verify" ? "verify" : "multi"));
   const board = gateBoard(events, ended);
+  const gateEvents = events.filter((e) => e.kind === "gate_progress");
+  const lastGate = gateEvents[gateEvents.length - 1];
+  const preparing = !ended && lastGate?.phase === "setup";
   const log = events.map((e) => ({ e, text: describe(e) })).filter((x) => x.text);
 
   return (
     <div className="space-y-6">
       <div>
-        <Link href="/" className="text-sm text-muted hover:text-fg">
-          ← All builds
+        <Link href="/runs/" className="text-sm text-muted hover:text-fg">
+          ← Runs
         </Link>
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <h1 className="min-w-0 flex-1 break-words text-xl font-bold">{job.title}</h1>
@@ -70,8 +95,25 @@ export function JobView() {
             </button>
           ) : null}
         </div>
-        {job.workspace ? <p className="mt-1 break-all font-mono text-xs text-muted">{job.workspace}</p> : null}
+        {job.workspace ? (
+          <p className="mt-1 flex flex-wrap items-center gap-x-3 font-mono text-xs text-muted">
+            <span className="break-all">{job.workspace}</span>
+            {ended && job.status === "done" ? (
+              <Link href={`/project/?path=${encodeURIComponent(job.workspace)}`} className="font-sans text-accent hover:underline">
+                Open the project: history, findings, files →
+              </Link>
+            ) : null}
+          </p>
+        ) : null}
       </div>
+
+      {preparing ? (
+        <p className="card flex items-center gap-3 p-4 text-sm" aria-live="polite">
+          <span className="pulse h-2.5 w-2.5 rounded-full bg-accent" aria-hidden />
+          Preparing the environment. The first check of a project installs its dependencies in an isolated environment
+          (cached afterwards), so it can take a minute or two.
+        </p>
+      ) : null}
 
       {job.kind !== "verify" ? <Stepper stages={stages(events, mode, job.status)} /> : null}
 

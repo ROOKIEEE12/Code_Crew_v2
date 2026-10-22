@@ -184,9 +184,11 @@ export interface JobDetail extends JobSummary {
 
 export interface Health {
   version: string;
+  python?: string;
   providers: { name: string; ready: boolean; reason: string }[];
   replays: string[];
   sandbox: { docker: boolean };
+  tools?: { ready: boolean; path: string };
   roots: string[];
 }
 
@@ -260,6 +262,88 @@ export const api = {
   workspace: (path: string) =>
     call<RunResult>(`/api/workspace?path=${encodeURIComponent(path)}`),
   evaluations: () => call<{ evaluations: Evaluation[] }>("/api/evaluations"),
+};
+
+export interface RunSummary {
+  run_id: string;
+  verdict: Verdict | null;
+  passed: boolean | null;
+  time: number;
+  duration_s: number;
+  counts: Partial<Record<GateStatus, number>>;
+  coverage: number | null;
+  mutation: number | null;
+  tests: number | null;
+  profile: "quick" | "full";
+  gates: Record<string, GateStatus>;
+}
+
+export interface ProjectSummary {
+  name: string;
+  path: string;
+  registered: boolean;
+  kind: "project" | "generated";
+  exists: boolean;
+  latest: RunSummary | null;
+  /** Oldest first, for trends. */
+  history: RunSummary[];
+  runs: number;
+}
+
+export interface FindingView {
+  gate: string;
+  gate_name: string;
+  gate_status: GateStatus;
+  blocking: boolean;
+  severity: Finding["severity"];
+  code: string;
+  message: string;
+  file: string | null;
+  line: number | null;
+  excerpt: { start: number; line: number; lines: string[] } | null;
+}
+
+export interface ProjectInfo {
+  config_error: string | null;
+  source_root?: string;
+  settings?: Record<string, unknown>;
+  settings_file?: string | null;
+  dependencies?: number;
+  requirement_files?: string[];
+  generated?: boolean;
+  install_dependencies?: boolean;
+  warnings?: string[];
+}
+
+export interface ProjectDetail extends Omit<ProjectSummary, "history"> {
+  /** Newest first. */
+  history: RunSummary[];
+  info: ProjectInfo;
+  report: (GateReport & { notes?: string[]; sources?: string[] }) | null;
+  badges: FileBadge[];
+  findings: FindingView[];
+  verdict_note: string | null;
+}
+
+export const projectsApi = {
+  list: () => call<{ projects: ProjectSummary[] }>("/api/projects"),
+  add: (path: string) =>
+    call<ProjectSummary>("/api/projects", { method: "POST", body: JSON.stringify({ path }) }),
+  remove: (path: string) =>
+    call<{ ok: true }>("/api/projects/remove", { method: "POST", body: JSON.stringify({ path }) }),
+  detail: (path: string, run?: string) =>
+    call<ProjectDetail>(
+      `/api/project?path=${encodeURIComponent(path)}${run ? `&run=${encodeURIComponent(run)}` : ""}`,
+    ),
+  file: (path: string, file: string) =>
+    call<{ path: string; content: string; modified: number }>(
+      `/api/project/file?path=${encodeURIComponent(path)}&file=${encodeURIComponent(file)}`,
+    ),
+  verify: (path: string, profile: "quick" | "full") =>
+    call<JobDetail>("/api/jobs", {
+      method: "POST",
+      body: JSON.stringify({ kind: "verify", workspace: path, profile }),
+    }),
 };
 
 export interface ConditionSummary {
