@@ -70,7 +70,7 @@ python -m codecrew.gates run samples/strength_vibe    # -> UNVERIFIED, exit 1
 # Generate and verify, fully offline via a replay file
 python -m codecrew build "Build an in-memory URL shortener" \
   --out /tmp/shortener --provider scripted \
-  --script samples/replays/url_shortener.json --clean
+  --script codecrew/replays/url_shortener.json --clean
 
 # Generate and verify with a real free-tier model
 export GROQ_API_KEY=...      # or GEMINI_API_KEY, or run Ollama
@@ -614,7 +614,6 @@ web/                 Next.js UI (static export, served by `codecrew serve`)
 samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
-  replays/           canned responses for offline demos
 tests/               CodeCrew's own suite
 ```
 

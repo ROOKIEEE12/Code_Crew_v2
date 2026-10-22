@@ -28,7 +28,7 @@ SPEC = {
                    "examples": [{"call": "clamp(5, 0, 10)", "result": "5"}]}],
     "assumptions": ["bounds are inclusive"],
 }
-REPLAYS = Path(__file__).resolve().parents[1] / "samples" / "replays"
+REPLAYS = Path(__file__).resolve().parents[1] / "codecrew" / "replays"
 
 
 def approving_runner(job, manager):
