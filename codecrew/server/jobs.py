@@ -304,6 +304,11 @@ def _validate_existing(params: dict, manager: JobManager) -> dict:
     if not path.is_dir():
         raise JobError(f"not a directory: {path}", 404)
     clean: dict[str, Any] = {"workspace": str(path)}
+    if params["kind"] == "verify":
+        profile = params.get("profile", "full")
+        if profile not in ("full", "quick"):
+            raise JobError("'profile' must be 'full' or 'quick'")
+        clean["profile"] = profile
     if params["kind"] == "repair":
         rounds = params.get("rounds", 2)
         if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= 4:
@@ -387,10 +392,22 @@ def _run_repair(job: Job, manager: JobManager) -> dict:
 
 
 def _run_verify(job: Job, manager: JobManager) -> dict:
+    import copy
+
+    from ..project import PROFILES, Project, ProjectConfigError
+
     workspace = Path(job.params["workspace"])
-    config = _gate_config(manager)
-    sandbox = get_sandbox(workspace, config.sandbox)
-    runner = GateRunner(workspace, config, sandbox=sandbox,
+    config = copy.deepcopy(_gate_config(manager))
+    try:
+        project = Project.detect(workspace)
+    except ProjectConfigError as exc:
+        raise JobError(f"[tool.codecrew] is invalid: {exc}") from exc
+    project.apply(config)
+    profile = job.params.get("profile")
+    if profile:
+        config.disabled = tuple(dict.fromkeys([*config.disabled, *PROFILES[profile]]))
+    sandbox = get_sandbox(workspace, config.sandbox, project=project)
+    runner = GateRunner(workspace, config, sandbox=sandbox, project=project,
                         progress=lambda e: job.add_event(
                             {"kind": "gate_progress", **e}))
     report = runner.run()
@@ -446,12 +463,12 @@ def describe_workspace(path: Path, *, report=None, badges=None) -> dict:
     else:
         badge_list = [asdict(b) for b in badges]
 
-    from ..gates.base import EXCLUDED_DIRS, _is_test
+    from ..gates.base import _is_test, is_excluded_part
 
     files = []
     for file in sorted(path.rglob("*.py")):
         rel = file.relative_to(path)
-        if any(part in EXCLUDED_DIRS for part in rel.parts) or rel.name == "conftest.py":
+        if any(is_excluded_part(part) for part in rel.parts) or rel.name == "conftest.py":
             continue
         files.append(_file_entry(rel.as_posix(), _read(file) or "", _is_test(rel)))
 

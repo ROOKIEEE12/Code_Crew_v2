@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -104,16 +105,73 @@ def third_party_imports(ctx: GateContext) -> dict[str, list[str]]:
 
 
 def declared_packages(ctx: GateContext) -> set[str]:
-    """Normalised distribution names the approved plan asked for."""
+    """Normalised distribution names the project declares.
+
+    For a generated project that is the approved plan. For a developer's
+    project it is what they declared themselves: pyproject dependencies
+    (and test/dev extras) and requirements files.
+    """
+    declared: set[str] = set()
     plan = ctx.workspace / WORK_DIR_NAME / "plan.json"
-    if not plan.exists():
-        return set()
+    if plan.exists():
+        try:
+            data = json.loads(plan.read_text(encoding="utf-8"))
+            declared |= {_normalise(d["name"]) for d in data.get("dependencies", [])
+                         if isinstance(d, dict) and "name" in d}
+        except (OSError, ValueError):
+            pass
+    project = ctx.project
+    if project is not None:
+        declared |= {_normalise(n) for n in project.declared_names()}
+        for name in project.requirement_files:
+            declared |= _requirement_names(ctx.workspace / name)
+    return declared
+
+
+_REQ_LINE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _requirement_names(path, depth: int = 0) -> set[str]:
+    names: set[str] = set()
     try:
-        data = json.loads(plan.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return set()
-    return {_normalise(d["name"]) for d in data.get("dependencies", [])
-            if isinstance(d, dict) and "name" in d}
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return names
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if line.startswith(("-r ", "--requirement ")) and depth < 3:
+            names |= _requirement_names(path.parent / line.split(None, 1)[1], depth + 1)
+            continue
+        if not line or line.startswith("-"):
+            continue
+        match = _REQ_LINE.match(line)
+        if match:
+            names.add(_normalise(match.group(1)))
+    return names
+
+
+def installed_distributions(ctx: GateContext) -> dict[str, list[str]]:
+    """Import name -> distributions providing it, from the run's environment.
+
+    Exact where the hand-written table is a guess ("dateutil" comes from
+    "python-dateutil"). Empty when it cannot be asked, in which case the
+    table and the import name itself are used.
+    """
+    try:
+        run = ctx.sandbox.run(
+            ["python", "-c",
+             "import importlib.metadata as m, json; "
+             "print(json.dumps(m.packages_distributions()))"],
+            timeout=60)
+    except Exception:  # noqa: BLE001 - a lookup aid, never a verdict
+        return {}
+    if not run.ok:
+        return {}
+    try:
+        data = json.loads(run.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {}
+    return {k: list(v) for k, v in data.items() if isinstance(v, list)}
 
 
 class DependencyGate(Gate):
@@ -129,17 +187,25 @@ class DependencyGate(Gate):
                                 "standard library only; no third-party imports")
 
         declared = declared_packages(ctx)
+        installed = installed_distributions(ctx)
+        generated = bool(getattr(ctx.project, "generated", True))
+        where = ("the approved plan" if generated
+                 else "the project (pyproject.toml or requirements files)")
+
+        def candidates(top: str) -> list[str]:
+            return [*installed.get(top, []), IMPORT_TO_DIST.get(top, top), top]
+
         findings: list[Finding] = []
         undeclared: list[str] = []
         for top, places in sorted(imports.items()):
-            dist = IMPORT_TO_DIST.get(top, top)
-            if _normalise(dist) not in declared and _normalise(top) not in declared:
+            if not any(_normalise(c) in declared for c in candidates(top)):
                 undeclared.append(top)
                 file, _, line = places[0].partition(":")
                 findings.append(Finding(
                     severity=Severity.HIGH, code="undeclared-dependency",
-                    message=(f"imports '{top}', which the approved plan never "
-                             f"declared; a hallucinated or unvetted package"),
+                    message=(f"imports '{top}', which {where} never declared; "
+                             f"it works here only by accident, or it is a "
+                             f"hallucinated or unvetted package"),
                     file=file, line=int(line) if line.isdigit() else None,
                 ))
 
@@ -148,7 +214,7 @@ class DependencyGate(Gate):
         # finding.
         offline_only = False
         for top in sorted(imports):
-            dist = IMPORT_TO_DIST.get(top, top)
+            dist = candidates(top)[0]
             try:
                 findings.extend(_inspect_package(dist))
             except NetworkUnavailable:

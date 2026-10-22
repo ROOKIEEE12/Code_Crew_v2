@@ -130,11 +130,20 @@ def _parse_mypy(stdout: str) -> list[Finding]:
         parts = head.split(":")
         file = parts[0] if parts else None
         lineno = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        message = message.strip()
+        # A third-party package without type stubs (or not installed in the
+        # tool environment) says nothing about this code. Found on the first
+        # real project tried: python-dateutil blocked every other gate.
+        # A genuinely broken import still fails G2 when the tests run.
+        environment = message.endswith(_ENVIRONMENT_CODES)
         findings.append(Finding(
-            severity=Severity.MEDIUM,
-            code="mypy:error",
-            message=message.strip(),
+            severity=Severity.LOW if environment else Severity.MEDIUM,
+            code="mypy:missing-stubs" if environment else "mypy:error",
+            message=message,
             file=file,
             line=lineno,
         ))
     return findings
+
+
+_ENVIRONMENT_CODES = ("[import-untyped]", "[import-not-found]", "[import]")

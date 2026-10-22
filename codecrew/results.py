@@ -106,6 +106,12 @@ class GateReport:
     sandbox: str
     results: list[GateResult] = field(default_factory=list)
     duration_s: float = 0.0
+    #: Code under test as discovered for this run (POSIX, relative), so
+    #: everything derived from the report judges the same set of files.
+    sources: list[str] = field(default_factory=list)
+    #: Facts about how the run was set up: the execution environment, where
+    #: the configuration came from, the profile. Context, never verdicts.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -119,7 +125,18 @@ class GateReport:
 
     @property
     def skipped(self) -> list[GateResult]:
+        """Every gate that did not run, advisory ones included."""
         return [r for r in self.results if r.status is Status.SKIP]
+
+    @property
+    def unverified(self) -> list[GateResult]:
+        """Skipped gates that would have been able to block.
+
+        Only these lower the verdict. An advisory gate never decides the
+        verdict (its FAIL does not block), so its absence cannot either;
+        it is still listed under "what was not verified".
+        """
+        return [r for r in self.skipped if r.blocking]
 
     def counts(self) -> dict[str, int]:
         counts = {s.value: 0 for s in Status}
@@ -131,7 +148,7 @@ class GateReport:
         """Trust badge for the workspace as a whole."""
         if not self.passed:
             return "UNVERIFIED"
-        if self.skipped:
+        if self.unverified:
             return "PARTIALLY VERIFIED"
         return "VERIFIED"
 

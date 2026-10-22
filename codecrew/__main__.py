@@ -83,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also write the machine-readable report here")
     verify.add_argument("--markdown", type=Path, default=None,
                         help="also append a Markdown summary here")
+    verify.add_argument("--sarif", type=Path, default=None,
+                        help="also write SARIF (code scanning, editors)")
+    verify.add_argument("--profile", choices=("quick", "full"), default=None,
+                        help="quick skips mutation testing: fast, never VERIFIED")
+    verify.add_argument("--strict", action="store_true",
+                        help="exit 1 unless the verdict is VERIFIED")
+    verify.add_argument("--format", choices=("text", "json"), default=None)
     verify.add_argument("--quiet", action="store_true")
 
     ci = sub.add_parser(
@@ -466,12 +473,13 @@ def _verify(args: argparse.Namespace) -> int:
     from .gates.__main__ import main as gates_main
 
     forwarded = ["run", str(args.workspace)]
-    for flag in ("sandbox", "disable", "json", "markdown"):
+    for flag in ("sandbox", "disable", "json", "markdown", "sarif", "profile", "format"):
         value = getattr(args, flag)
         if value is not None:
             forwarded += [f"--{flag}", str(value)]
-    if args.quiet:
-        forwarded.append("--quiet")
+    for flag in ("quiet", "strict"):
+        if getattr(args, flag):
+            forwarded.append(f"--{flag}")
     return gates_main(forwarded)
 
 
