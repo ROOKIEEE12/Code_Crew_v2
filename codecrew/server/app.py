@@ -104,7 +104,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self) -> dict | None:
+    def _read_raw(self) -> bytes | None:
+        """Consume the request body before any reply, refusals included: a
+        reply sent over an unread body makes some clients see a reset."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -113,9 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._json({"error": "body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return None
-        # Always consume the body before answering, even to refuse it: a
-        # reply sent over an unread body makes some clients see a reset.
-        raw = self.rfile.read(length) if length else b""
+        return self.rfile.read(length) if length else b""
+
+    def _body(self, raw: bytes) -> dict | None:
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if ctype != "application/json":
             self._json({"error": "Content-Type must be application/json"},
@@ -188,9 +190,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": str(exc)}, exc.status)
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._guard():
+        raw = self._read_raw()
+        if raw is None or not self._guard():
             return
-        body = self._body()
+        body = self._body(raw)
         if body is None:
             return
         url = urlsplit(self.path)
