@@ -108,8 +108,22 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--python", default="3.12")
     ci.add_argument("--disable", default=None,
                     help="comma-separated gate ids to skip in CI")
+    ci.add_argument("--code-scanning", action="store_true",
+                    help="also upload findings as SARIF, so they appear as "
+                         "pull-request annotations (needs code scanning)")
     ci.add_argument("--force", action="store_true",
                     help="overwrite an existing workflow")
+
+    init = sub.add_parser(
+        "init", help="set a repository up: config, .gitignore, optional CI "
+                     "and pre-commit")
+    init.add_argument("path", type=Path, nargs="?", default=Path("."))
+    init.add_argument("--ci", action="store_true",
+                      help="also write the GitHub Actions workflow")
+    init.add_argument("--code-scanning", action="store_true",
+                      help="with --ci: upload findings to code scanning")
+    init.add_argument("--pre-commit", action="store_true",
+                      help="also add the quick gates as a pre-commit hook")
     ci.add_argument("--print", dest="print_only", action="store_true",
                     help="print the workflow instead of writing it")
 
@@ -491,6 +505,7 @@ def _ci_export(args: argparse.Namespace) -> int:
         ref=args.ref, python=args.python,
         disable=tuple(p.strip().upper() for p in (args.disable or "").split(",")
                       if p.strip()),
+        code_scanning=args.code_scanning,
     )
     try:
         if args.print_only:
@@ -502,6 +517,28 @@ def _ci_export(args: argparse.Namespace) -> int:
         return 2
     print(f"wrote {path}")
     print("Commit it, and every push and pull request re-runs the gates.")
+    return 0
+
+
+def _init(args: argparse.Namespace) -> int:
+    from .init import init_project
+
+    try:
+        result = init_project(args.path, ci=args.ci, pre_commit=args.pre_commit,
+                              code_scanning=args.code_scanning)
+    except (FileNotFoundError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    for item in result.written:
+        print(f"  wrote  {item}")
+    for item in result.kept:
+        print(f"  kept   {item} (already there)")
+    for note in result.notes:
+        print("\n" + note)
+    print("\nNext:")
+    print("  codecrew verify .                 # every gate, with evidence")
+    print("  codecrew verify . --profile quick # fast check while you work")
+    print("  codecrew serve                    # the web UI")
     return 0
 
 
@@ -524,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
         return _eval(args)
     if args.command == "ci-export":
         return _ci_export(args)
+    if args.command == "init":
+        return _init(args)
     if args.command == "serve":
         return _serve(args)
     if args.command == "bench":

@@ -1,0 +1,28 @@
+# pre-commit hooks published by this repository.
+# Use them from another project's .pre-commit-config.yaml:
+#
+#   - repo: https://github.com/ROOKIEEE12/Code_Crew_v2
+#     rev: <tag or commit SHA>
+#     hooks:
+#       - id: codecrew-quick
+#
+# codecrew-quick skips mutation testing, so it stays fast enough for every
+# commit; CI (codecrew ci-export) runs the full set.
+- id: codecrew-quick
+  name: CodeCrew (quick gates)
+  description: Compile, lint, types, dependencies, tests, coverage and security.
+  entry: codecrew verify . --profile quick --quiet
+  language: python
+  pass_filenames: false
+  types: [python]
+  require_serial: true
+
+- id: codecrew-full
+  name: CodeCrew (all gates)
+  description: Every gate, mutation testing included. Slower.
+  entry: codecrew verify . --quiet
+  language: python
+  pass_filenames: false
+  types: [python]
+  require_serial: true
+  stages: [pre-push, manual]
