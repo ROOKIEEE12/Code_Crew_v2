@@ -202,6 +202,23 @@ def test_an_empty_truncated_answer_is_retried_with_a_larger_budget():
     assert provider.seen[-1] == 8192
 
 
+def test_a_cut_off_answer_raises_the_budget_for_the_next_call():
+    from codecrew.llm import LLMClient, LLMConfig, Message
+    from codecrew.llm.base import Completion, Usage
+
+    class CutOff(_ThinksTooLong):
+        def complete(self, messages, **kw):
+            self.seen.append(kw["max_tokens"])
+            return Completion(text='{"files": [', provider="groq", model="m",
+                              latency_s=0.0, usage=Usage(1, 1), finish_reason="length")
+
+    provider = CutOff(enough=0)
+    client = LLMClient(LLMConfig(provider="groq", backoff_base_s=0.0), provider=provider)
+    assert client.complete([Message("user", "a")]).text == '{"files": ['  # returned
+    client.complete([Message("user", "b")])
+    assert provider.seen == [4096, 8192]
+
+
 def test_the_budget_has_a_ceiling():
     from codecrew.llm import LLMClient, LLMConfig, Message
     from codecrew.llm.client import MAX_TOKEN_BUDGET

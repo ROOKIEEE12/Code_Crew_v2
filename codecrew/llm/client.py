@@ -195,13 +195,17 @@ class LLMClient:
                 # A truncated answer is a silent corruption source: the code
                 # it produces will be syntactically incomplete.
                 self.tracer.event("llm_truncated", agent=agent, model=completion.model)
+                # Any cut-off answer means the budget was too small for this
+                # model: later calls start larger (a cut-off answer is broken
+                # JSON or code, so the agent will ask again).
+                bigger = min(limit * 2, MAX_TOKEN_BUDGET)
+                self._budget[model or ""] = max(self._budget.get(model or "", 0), bigger)
                 if not completion.text.strip() and limit < MAX_TOKEN_BUDGET \
                         and attempt < self.config.max_retries:
                     # Found live with gpt-oss-20b: a reasoning model spent the
                     # whole budget thinking and returned nothing. That is not
                     # an answer to judge, so ask again with room to answer.
-                    limit = min(limit * 2, MAX_TOKEN_BUDGET)
-                    self._budget[model or ""] = limit
+                    limit = bigger
                     last_error = LLMError("empty answer: the token budget went on reasoning")
                     self.tracer.event(
                         "llm_retry", agent=agent, task=kind.value, attempt=attempt,
