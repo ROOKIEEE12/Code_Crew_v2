@@ -125,6 +125,8 @@ class LLMClient:
             or ModelTiers()
         )
         self.tiers = _apply_env_overrides(base_tiers)
+        #: model -> token budget it has been seen to need (see complete()).
+        self._budget: dict[str, int] = {}
 
     def complete(
         self,
@@ -138,7 +140,9 @@ class LLMClient:
         """Call the model, retrying transient rate limits."""
         model = self.tiers.model_for(kind)
         temp = self.config.temperature if temperature is None else temperature
-        limit = max_tokens or self.config.max_tokens
+        # A model that once needed a larger budget to answer at all gets it
+        # from the start next time, instead of failing empty again.
+        limit = max(max_tokens or self.config.max_tokens, self._budget.get(model or "", 0))
         last_error: Exception | None = None
 
         for attempt in range(1, self.config.max_retries + 1):
@@ -197,6 +201,7 @@ class LLMClient:
                     # whole budget thinking and returned nothing. That is not
                     # an answer to judge, so ask again with room to answer.
                     limit = min(limit * 2, MAX_TOKEN_BUDGET)
+                    self._budget[model or ""] = limit
                     last_error = LLMError("empty answer: the token budget went on reasoning")
                     self.tracer.event(
                         "llm_retry", agent=agent, task=kind.value, attempt=attempt,

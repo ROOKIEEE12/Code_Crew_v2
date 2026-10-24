@@ -197,6 +197,9 @@ def test_an_empty_truncated_answer_is_retried_with_a_larger_budget():
     completion = client.complete([Message("user", "hi")])
     assert completion.text == '{"ok": true}'
     assert provider.seen == [4096, 8192]
+    # The next call starts with the budget that worked.
+    client.complete([Message("user", "again")])
+    assert provider.seen[-1] == 8192
 
 
 def test_the_budget_has_a_ceiling():
