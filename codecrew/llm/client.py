@@ -14,6 +14,9 @@ from ..trace import NullTracer, Tracer
 from .base import Completion, LLMError, Message, Provider, ProviderUnavailable, RateLimited
 from .providers import AUTO_ORDER, PROVIDERS, ScriptedProvider
 
+#: Ceiling for the token budget when an answer comes back empty and truncated.
+MAX_TOKEN_BUDGET = 16384
+
 
 class TaskKind(str, enum.Enum):
     """What an agent is asking the model to do.
@@ -188,6 +191,18 @@ class LLMClient:
                 # A truncated answer is a silent corruption source: the code
                 # it produces will be syntactically incomplete.
                 self.tracer.event("llm_truncated", agent=agent, model=completion.model)
+                if not completion.text.strip() and limit < MAX_TOKEN_BUDGET \
+                        and attempt < self.config.max_retries:
+                    # Found live with gpt-oss-20b: a reasoning model spent the
+                    # whole budget thinking and returned nothing. That is not
+                    # an answer to judge, so ask again with room to answer.
+                    limit = min(limit * 2, MAX_TOKEN_BUDGET)
+                    last_error = LLMError("empty answer: the token budget went on reasoning")
+                    self.tracer.event(
+                        "llm_retry", agent=agent, task=kind.value, attempt=attempt,
+                        reason="empty_truncated", max_tokens=limit,
+                    )
+                    continue
             return completion
 
         raise LLMError(

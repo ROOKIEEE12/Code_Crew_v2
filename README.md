@@ -4,6 +4,79 @@ A multi-agent AI system for collaborative software development — built as a
 **verification pipeline that happens to use AI to write the code**, rather than
 a prompt chain that trusts its own output.
 
+## Use it on your code
+
+CodeCrew checks a Python project the way a careful reviewer would want it
+checked, and gives a verdict no AI gets to decide: **VERIFIED**,
+**PARTIALLY VERIFIED** (something blocking could not run) or **UNVERIFIED**
+(something blocking failed). Checking your own code needs no AI model and
+no API key.
+
+```bash
+pip install "codecrew @ git+https://github.com/ROOKIEEE12/Code_Crew_v2.git"
+cd my-project
+codecrew init --ci --pre-commit      # config, .gitignore, CI workflow, pre-commit hook
+codecrew verify . --profile quick    # fast: everything except mutation testing
+codecrew verify .                    # every gate
+codecrew serve                       # the web UI on http://127.0.0.1:8765
+```
+
+The web UI ships inside release wheels (built by the release workflow). From
+a git checkout, build it once with `cd web && npm ci && npm run build`
+(Node 20+); the API and CLI work without it.
+
+What a check runs, in order, each a real tool rather than a model:
+
+| Gate | What it answers |
+|---|---|
+| G1 syntax, lint, types | Does it compile, are names defined, do types line up? (ruff, mypy) |
+| G8 dependencies | Is every import a declared, existing package, without known vulnerabilities? |
+| G7 spec conformance | Do the spec's examples hold? (AI builds only) |
+| G2 tests | Do the project's tests pass? |
+| G3 branch coverage | Did the tests reach every branch? |
+| G5 security | bandit and detect-secrets |
+| G4 mutation score | If a bug were introduced, would the tests notice? |
+| G6 property tests | Are edge cases explored beyond hand-picked inputs? (advisory) |
+
+Day to day:
+
+- **Your repository as it is.** src layouts, `pyproject.toml` /
+  `requirements*.txt` dependencies (installed once into a cached, isolated
+  environment under `~/.codecrew/envs`, never into your repo), and
+  `[tool.codecrew]` settings for thresholds, excludes and the profile.
+- **Your files are never modified.** Mutation testing runs on a scratch copy.
+- **Fast while you work, thorough before you merge.** `--profile quick` skips
+  mutation testing (and so can never say VERIFIED); `--strict` exits non-zero
+  unless the verdict is VERIFIED.
+- **Where you already look.** `--sarif` for VS Code and GitHub code
+  scanning, `--json`, `--markdown` for CI job summaries, a pre-commit hook
+  (`codecrew-quick`), and `codecrew ci-export` for GitHub Actions.
+- **The web UI.** Add a project folder, then Quick or Full check. Each
+  project has its verdict history and coverage/mutation trends, findings
+  grouped by file with the code around each, per-file trust badges, and
+  **Copy fix prompt**, which turns the findings into a prompt for whichever
+  AI assistant you use (built from the report, not by a model).
+
+Configuration (all optional), in `pyproject.toml`:
+
+```toml
+[tool.codecrew]
+profile = "full"                 # or "quick"
+min-coverage = 70                # branch coverage, percent
+min-mutation = 50                # mutation score, percent
+max-mutants = 40
+exclude = ["migrations/*"]
+disable = []                     # gate ids, e.g. ["G6"] (they show as not run)
+non-blocking = []                # gates that report but never block
+install-dependencies = "auto"    # auto | true | false
+test-timeout = 60                # seconds per test
+```
+
+Exit codes: `0` passed (VERIFIED or PARTIALLY VERIFIED; with `--strict`, only
+VERIFIED), `1` not passed, `2` a usage or configuration error.
+
+The rest of this README is how the system is built and what was measured.
+
 ## The problem this exists to solve
 
 A single-agent coding assistant generates code and stops. The obvious fix —
@@ -109,11 +182,23 @@ whose dependency failed reports `SKIP — blocked by G1` instead of running
 against code that cannot compile, but independent gates still run, so one
 failure never hides every other problem.
 
-### Three policy decisions worth defending in a viva
+### Policy decisions worth defending in a viva
 
-- **`SKIP` is never a pass.** A missing tool downgrades the verdict to
-  `PARTIALLY VERIFIED` and is listed under "what was not verified". Silent
-  green on an unrun check is the exact failure mode this project targets.
+- **`SKIP` is never a pass.** A blocking gate that did not run downgrades the
+  verdict to `PARTIALLY VERIFIED` and is listed under "what was not
+  verified". Silent green on an unrun check is the exact failure mode this
+  project targets.
+- **Advisory gates never decide the verdict, either way.** Changed in the
+  production-readiness work: G6 (property tests) is advisory, so its FAIL
+  never blocked; until then its *absence* still lowered the verdict, which
+  made nearly every real project (few use Hypothesis) permanently "partial"
+  and taught people to ignore the verdict. Now only blocking gates count;
+  advisory skips are still listed. A *disabled* blocking gate (the quick
+  profile's G4) still lowers the verdict. Benchmark false-confidence numbers
+  are unaffected: they use `report.passed`, which did not change.
+- **Environment problems are not code verdicts.** Missing type stubs for a
+  third-party package are a note, not a G1 failure; tests that cannot import
+  a declared-but-uninstalled dependency are an `ERROR`, not a test `FAIL`.
 - **Code with no tests FAILs.** It is not "nothing to check" — it is the output
   the project exists to prevent.
 - **A crashed gate is `ERROR`, not `FAIL`.** A bug in CodeCrew must never be
@@ -592,8 +677,13 @@ codecrew/
   badges.py          per-file trust badges and the review caveat
   docs.py            USAGE.md, rendered from the spec (no model)
   ci_export.py       GitHub Actions workflow for the gates
-  __main__.py        CLI: doctor | build | verify | bench | compare | eval | ci-export | serve
-  server/            local HTTP API: jobs, approvals, live progress
+  project.py         a developer's repository: layout, dependencies, [tool.codecrew]
+  toml.py            TOML reader (tomllib on 3.11+, a small parser on 3.10)
+  sarif.py           SARIF 2.1.0 output for editors and code scanning
+  init.py            `codecrew init`
+  replays/           recorded model answers for the offline demo
+  __main__.py        CLI: doctor | init | verify | build | serve | ci-export | bench | compare | eval
+  server/            local HTTP API: jobs, approvals, projects, run history
   bench/             tasks with hidden tests, runner, ablation study
   sandbox/           base contract, docker backend, local-venv backend
   llm/
@@ -655,6 +745,15 @@ verification:
 - **Only Groq has been run live.** Gemini and Ollama payloads and response
   parsing are asserted offline; no real Gemini or Ollama endpoint has been
   called.
+- **Python only.** The gates understand Python projects; other languages are
+  not checked.
+- **The first check of a project needs the internet** to install its declared
+  dependencies (cached afterwards). Offline, tests that import them are
+  reported as an environment ERROR rather than a result.
+- **The Docker backend is unverified** on real hardware and does not install
+  project dependencies; `auto` falls back to the local backend without Docker.
+- **The UI is a local, single-user tool.** No accounts; in-flight jobs are
+  lost on restart (finished runs stay in each project's history).
 - **Small samples.** Every measured number in this README comes from one run
   per task on a handful of tasks, under a free-tier daily token quota. See
   the evaluation section for what that does and does not support.
