@@ -661,7 +661,24 @@ codecrew eval --name main --reps 3          # resumable; re-run to continue
 codecrew eval --name main --report          # Markdown report + summary.json
 ```
 
-<!-- EVAL-RESULTS -->
+**Where the live study stands (stated plainly):** it has not produced
+results yet. Running it surfaced harness problems that would have been
+recorded as findings about the architectures if they had not been
+inspected, and each was fixed rather than counted:
+
+- a reasoning model (`gpt-oss-20b`) spent its whole token budget thinking
+  and returned nothing, which agents recorded as "failed to build"; the
+  client now retries an empty, cut-off answer with a larger budget and
+  remembers the budget a model needs;
+- a cell interrupted mid-run left a folder that a sync client kept locked,
+  which crashed the next invocation; such leftovers are now stepped around.
+
+The cells produced by those bugs were deleted from the local study so they
+are re-run, not counted. One valid cell exists (`single`, `semver`: the
+gates rejected code whose hidden tests passed, a false alarm). The study
+(`hard-gptoss20b`: 4 hard tasks x 3 conditions x 3 reps on Groq's free
+`openai/gpt-oss-20b`) resumes with the same command once the daily quota
+resets. No claim about the architectures is made until it completes.
 
 ## Layout
 
