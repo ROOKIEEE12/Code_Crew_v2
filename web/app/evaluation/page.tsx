@@ -88,6 +88,91 @@ export default function EvaluationPage() {
               ))}
             </tbody>
           </table>
+
+          <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div>
+              <h3 className="mb-1 text-sm font-semibold">What the deep gates add</h3>
+              <p className="mb-2 text-xs text-muted">
+                Same runs, two judges: cases where &quot;its own tests pass&quot; would have shipped wrong code.
+              </p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-xs text-muted">
+                    <th className="py-1 pr-2">Architecture</th>
+                    <th className="pr-2">Wrong, own tests green</th>
+                    <th className="pr-2">Caught by gates</th>
+                    <th>Correct, rejected</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ev.gate_value.map((g) => (
+                    <tr key={g.condition} className="border-b border-line/60">
+                      <td className="py-1 pr-2">{LABEL[g.condition] ?? g.condition}</td>
+                      <td className="pr-2">{g.own_tests_false_confidence}</td>
+                      <td className="pr-2 text-ok">{g.caught_by_full_gates}</td>
+                      <td className="text-warn">{g.extra_rejections_of_correct_code}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h3 className="mb-1 text-sm font-semibold">Paired comparison (exact McNemar)</h3>
+              <p className="mb-2 text-xs text-muted">Same task and repetition; only the discordant pairs count.</p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-xs text-muted">
+                    <th className="py-1 pr-2">A vs B</th>
+                    <th className="pr-2">Pairs</th>
+                    <th className="pr-2">Only A</th>
+                    <th className="pr-2">Only B</th>
+                    <th>p</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ev.paired.map((p) => (
+                    <tr key={`${p.a}-${p.b}`} className="border-b border-line/60">
+                      <td className="py-1 pr-2">
+                        {p.a} vs {p.b}
+                      </td>
+                      <td className="pr-2">{p.pairs}</td>
+                      <td className="pr-2">{p.a_only_pass}</td>
+                      <td className="pr-2">{p.b_only_pass}</td>
+                      <td>{p.p_value.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <details className="mt-6">
+            <summary className="cursor-pointer text-sm font-semibold">Per task</summary>
+            <table className="mt-2 w-full text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-muted">
+                  <th className="py-1 pr-2">Task</th>
+                  {(ev.meta.conditions ?? []).map((c) => (
+                    <th key={c} className="pr-2">
+                      {LABEL[c] ?? c}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(ev.per_task).map(([task, cells]) => (
+                  <tr key={task} className="border-b border-line/60">
+                    <td className="py-1 pr-2 font-mono text-xs">{task}</td>
+                    {(ev.meta.conditions ?? []).map((c) => (
+                      <td key={c} className={`pr-2 ${cells[c]?.includes("FC") ? "text-bad" : ""}`}>
+                        {cells[c] ?? "–"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
         </section>
       ))}
     </div>

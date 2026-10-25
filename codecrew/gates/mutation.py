@@ -7,7 +7,9 @@ wrong. A suite with 100% pass rate and a 10% mutation score is decoration.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,13 +40,31 @@ class MutationGate(Gate):
             )
         sites = engine.sample_sites(all_sites, thresholds.max_mutants)
 
+        # Mutants are applied to a scratch copy, never to the project: an
+        # editor, a file watcher or a crash mid-run must not see (or keep)
+        # deliberately broken code in someone's working tree.
+        scratch = Path(tempfile.mkdtemp(prefix="codecrew-mutants-"))
+        try:
+            shutil.copytree(ctx.workspace, scratch / "w", ignore=_ignore_excluded,
+                            dirs_exist_ok=True)
+            mctx = dataclasses.replace(ctx, workspace=scratch / "w",
+                                       sandbox=ctx.sandbox.for_workspace(scratch / "w"))
+            return self._mutate(mctx, ctx, sites, len(all_sites))
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    def _mutate(self, ctx: GateContext, home: GateContext,
+                sites: list[engine.MutationSite], total_sites: int) -> GateResult:
+        """Score ``sites`` in the scratch context; evidence goes to ``home``."""
+        thresholds = ctx.config.thresholds
+
         # A green baseline is required: if the suite is already failing, a
         # "killed" mutant proves nothing. G2 normally catches this first.
         baseline = self._run_tests(ctx, thresholds.mutant_timeout_s)
         if not baseline.ok:
             return self._result(
                 ctx, Status.SKIP, "not run", evidence=self.save_evidence(
-                    ctx, baseline, suffix="-baseline"),
+                    home, baseline, suffix="-baseline"),
                 note="test suite does not pass, so mutation score is meaningless",
             )
 
@@ -87,15 +107,15 @@ class MutationGate(Gate):
             for site in survived
         ]
         evidence = self._write_report(
-            ctx, killed, survived, errored, score, len(all_sites), truncated
+            home, killed, survived, errored, score, total_sites, truncated
         )
         summary = (
             f"{score:.1f}% mutation score "
             f"({len(killed)}/{evaluated} killed, threshold {threshold:.0f}%)"
         )
         notes = []
-        if len(sites) < len(all_sites):
-            notes.append(f"sampled {len(sites)} of {len(all_sites)} sites")
+        if len(sites) < total_sites:
+            notes.append(f"sampled {len(sites)} of {total_sites} sites")
         if truncated:
             notes.append("stopped early on the gate time limit")
         if errored:
@@ -176,6 +196,11 @@ class MutationGate(Gate):
             return path.relative_to(ctx.workspace).as_posix()
         except ValueError:
             return path.as_posix()
+
+
+def _ignore_excluded(directory: str, names: list[str]) -> set[str]:
+    from .base import is_excluded_part
+    return {name for name in names if is_excluded_part(name)}
 
 
 def _unlink(path: Path) -> None:

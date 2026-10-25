@@ -92,13 +92,22 @@ def test_a_failure_nobody_can_place_leaves_every_file_unverified(two_modules: Pa
     assert set(badges_of(report, two_modules).values()) == {UNVERIFIED}
 
 
-def test_a_skipped_gate_caps_every_file_at_partial(two_modules: Path):
+def test_a_skipped_blocking_gate_caps_every_file_at_partial(two_modules: Path):
     report = GateReport("r", str(two_modules), "s", [
-        gate("G1", Status.PASS), gate("G4", Status.SKIP, blocking=False,
-                                      note="blocked by G2")])
+        gate("G1", Status.PASS), gate("G4", Status.SKIP, note="blocked by G2")])
     badges = {b.path: b for b in compute_badges(report, two_modules)}
     assert {b.badge for b in badges.values()} == {PARTIAL}
     assert "blocked by G2" in badges["stats.py"].reasons[0]
+
+
+def test_a_skipped_advisory_gate_is_a_note_not_a_downgrade(two_modules: Path):
+    report = GateReport("r", str(two_modules), "s", [
+        gate("G1", Status.PASS),
+        gate("G6", Status.SKIP, blocking=False, note="no Hypothesis tests")])
+    assert report.verdict() == VERIFIED
+    badges = {b.path: b for b in compute_badges(report, two_modules)}
+    assert {b.badge for b in badges.values()} == {VERIFIED}
+    assert "no Hypothesis tests" in badges["stats.py"].notes[0]
 
 
 def test_medium_findings_in_a_passing_gate_are_notes_not_downgrades(two_modules: Path):
@@ -190,10 +199,13 @@ def test_usage_carries_the_verdict_and_the_review_caveat():
 def test_markdown_report_lists_every_gate_and_what_was_not_verified():
     report = GateReport("r", "w", "s", [
         gate("G1", Status.PASS),
-        gate("G4", Status.SKIP, blocking=False, note="blocked by G2")])
+        gate("G4", Status.SKIP, note="blocked by G2"),
+        gate("G6", Status.SKIP, blocking=False, note="no property tests")])
     text = render_markdown(report, note="against an unreviewed spec")
     assert text.startswith("## CodeCrew: PARTIALLY VERIFIED")
-    assert "| G4 G4 (advisory) | ⚪ SKIP |" in text
+    assert "| G4 G4 | ⚪ SKIP |" in text
+    assert "| G6 G6 (advisory) | ⚪ SKIP |" in text
+    assert "advisory: does not change the verdict" in text
     assert "blocked by G2" in text
     assert "against an unreviewed spec" in text
 

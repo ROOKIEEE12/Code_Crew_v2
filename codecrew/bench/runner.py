@@ -71,6 +71,9 @@ class TaskOutcome:
     repair_verdicts: list[str] = field(default_factory=list)
     repairs_accepted: int = 0
     initial_verdict: str | None = None
+    #: gate id -> status, so a weaker judge can be re-applied to the same
+    #: run afterwards (the ablation's "own tests only" condition).
+    gate_statuses: dict[str, str] = field(default_factory=dict)
 
     @property
     def classification(self) -> str:
@@ -252,10 +255,11 @@ class BenchRunner:
 def _gate_metrics(result: RunResult) -> dict:
     """Pull the comparable numbers out of the gate report, if there is one."""
     empty = {"mutation_score": None, "branch_coverage": None,
-             "own_tests_passed": None}
+             "own_tests_passed": None, "gate_statuses": {}}
     if result.report is None:
         return empty
     by_id = {r.gate_id: r for r in result.report.results}
+    statuses = {r.gate_id: r.status.value for r in result.report.results}
 
     def score(gate_id: str) -> float | None:
         gate = by_id.get(gate_id)
@@ -266,6 +270,7 @@ def _gate_metrics(result: RunResult) -> dict:
         "mutation_score": score("G4"),
         "branch_coverage": score("G3"),
         "own_tests_passed": None if g2 is None else g2.status.value == "PASS",
+        "gate_statuses": statuses,
     }
 
 

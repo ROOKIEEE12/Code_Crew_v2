@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from codecrew.bench.hard_tasks import HARD_TASKS
 from codecrew.bench import (
     BUILD_FAILED,
     CAUGHT,
@@ -43,14 +44,17 @@ def run_hidden(tmp_path: Path, module: str, source: str, hidden: str):
 
 # -- validity of the benchmark ------------------------------------------------
 
-@pytest.mark.parametrize("task", TASKS, ids=lambda t: t.id)
+ALL_SINGLE = (*TASKS, *HARD_TASKS)
+
+
+@pytest.mark.parametrize("task", ALL_SINGLE, ids=lambda t: t.id)
 def test_reference_solution_passes_the_hidden_tests(task, tmp_path: Path):
     """Every task must be satisfiable, or a failure means nothing."""
     result = run_hidden(tmp_path, task.module, task.reference, task.hidden_tests)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("task", TASKS, ids=lambda t: t.id)
+@pytest.mark.parametrize("task", ALL_SINGLE, ids=lambda t: t.id)
 def test_a_module_that_does_nothing_fails_the_hidden_tests(task, tmp_path: Path):
     """The hidden tests must be able to say no."""
     result = run_hidden(tmp_path, task.module, "# intentionally empty\n",
@@ -59,7 +63,7 @@ def test_a_module_that_does_nothing_fails_the_hidden_tests(task, tmp_path: Path)
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("task", TASKS, ids=lambda t: t.id)
+@pytest.mark.parametrize("task", ALL_SINGLE, ids=lambda t: t.id)
 def test_gates_never_reject_the_reference_solution(task, tmp_path: Path):
     """The judge must be able to pass a known-correct answer.
 
@@ -81,8 +85,61 @@ def test_gates_never_reject_the_reference_solution(task, tmp_path: Path):
 
 
 def test_task_ids_and_modules_are_unique():
-    assert len({t.id for t in TASKS}) == len(TASKS)
-    assert len({t.module for t in TASKS}) == len(TASKS)
+    assert len({t.id for t in ALL_SINGLE}) == len(ALL_SINGLE)
+    assert len({t.module for t in ALL_SINGLE}) == len(ALL_SINGLE)
+
+
+def test_hard_tasks_stay_out_of_the_default_suite():
+    """Adding them to `bench` would make every earlier number incomparable."""
+    assert not {t.id for t in HARD_TASKS} & {t.id for t in get_tasks()}
+    assert [t.id for t in get_tasks(["semver"])] == ["semver"]
+    assert {t.tier for t in HARD_TASKS} == {"hard"}
+
+
+# Known-wrong programs each hard task must reject: the mistakes the tasks
+# were chosen for. A hidden suite that accepts these would not measure them.
+WRONG = {
+    "semver": ("semver_compare", '''
+def compare_versions(a, b):
+    key = lambda v: v.split("+")[0]
+    return (key(a) > key(b)) - (key(a) < key(b))
+'''),
+    "csv_line": ("csv_line", '''
+def parse_csv_line(line):
+    return line.split(",")
+'''),
+    "expr_eval": ("expr_eval", '''
+def evaluate(expression):
+    import ast
+    return eval(compile(ast.parse(expression, mode="eval"), "<e>", "eval"))
+'''),
+    "token_bucket": ("token_bucket", '''
+import time
+class TokenBucket:
+    def __init__(self, rate, capacity, clock=time.monotonic):
+        if rate <= 0 or capacity <= 0:
+            raise ValueError
+        self.rate, self.capacity, self.clock = rate, capacity, clock
+        self.tokens = capacity
+        self.last = clock()
+    def allow(self, cost=1):
+        now = self.clock()
+        self.tokens += (now - self.last) * self.rate
+        self.last = now
+        if self.tokens >= cost:
+            self.tokens -= cost
+            return True
+        return False
+'''),
+}
+
+
+@pytest.mark.parametrize("task", HARD_TASKS, ids=lambda t: t.id)
+def test_hard_tasks_reject_the_plausible_wrong_answer(task, tmp_path: Path):
+    module, source = WRONG[task.id]
+    assert module == task.module
+    result = run_hidden(tmp_path, module, source, task.hidden_tests)
+    assert result.returncode != 0, "the hidden tests accepted a known-wrong program"
 
 
 def test_suite_spans_three_tiers_with_a_security_subset():

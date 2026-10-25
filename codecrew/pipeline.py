@@ -249,7 +249,8 @@ class Pipeline:
         repairs: list[RepairStep] = []
         initial_verdict = None
         if verify:
-            sandbox = get_sandbox(workspace, self.gate_config.sandbox)
+            sandbox = get_sandbox(workspace, self.gate_config.sandbox,
+                                  project=_project_of(workspace))
             report = self._verify(workspace, sandbox, tracer, run_id)
             initial_verdict = report.verdict()
 
@@ -311,7 +312,7 @@ class Pipeline:
         same artefacts, before and after. It is also what a user wants after
         editing a generated project by hand.
         """
-        from .gates.base import EXCLUDED_DIRS
+        from .gates.base import is_excluded_part
 
         started = time.monotonic()
         workspace = workspace.resolve()
@@ -325,7 +326,7 @@ class Pipeline:
         files = []
         for path in sorted(workspace.rglob("*.py")):
             rel = path.relative_to(workspace)
-            if any(part in EXCLUDED_DIRS for part in rel.parts):
+            if any(is_excluded_part(part) for part in rel.parts):
                 continue
             if rel.name == "conftest.py":
                 continue
@@ -338,7 +339,8 @@ class Pipeline:
         client = LLMClient(self.llm_config, tracer=tracer)
         tracer.event("repair_start", workspace=str(workspace), rounds=rounds)
 
-        sandbox = get_sandbox(workspace, self.gate_config.sandbox)
+        sandbox = get_sandbox(workspace, self.gate_config.sandbox,
+                                  project=_project_of(workspace))
         report = self._verify(workspace, sandbox, tracer, run_id)
         initial = report.verdict()
         repairs: list[RepairStep] = []
@@ -630,6 +632,15 @@ def owner_module(report: GateReport, modules: list[str]) -> str:
             if stem in modules:
                 return stem
     return modules[0]
+
+
+def _project_of(workspace: Path):
+    """The workspace as a project (layout, declared dependencies), if readable."""
+    from .project import Project, ProjectConfigError
+    try:
+        return Project.detect(workspace)
+    except ProjectConfigError:
+        return None
 
 
 def _is_within(target: Path, root: Path) -> bool:

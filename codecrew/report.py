@@ -248,7 +248,8 @@ def _not_verified(report: GateReport) -> list[str]:
     lines: list[str] = []
     for result in report.skipped:
         reason = result.note or "no reason recorded"
-        lines.append(f"  {result.gate_id} {result.name} did not run - {reason}")
+        advisory = "" if result.blocking else " (advisory: does not change the verdict)"
+        lines.append(f"  {result.gate_id} {result.name} did not run - {reason}{advisory}")
     for result in report.results:
         if result.status is Status.ERROR:
             lines.append(

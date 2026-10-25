@@ -42,10 +42,21 @@ class TestGate(Gate):
                 "-p", "no:cacheprovider", "--no-header", "-rf"]
         if ctx.sandbox.has_module("pytest_timeout"):
             # Guards against generated code with an infinite loop.
-            args += ["--timeout", "60"]
+            args += ["--timeout", str(ctx.config.thresholds.test_timeout_s)]
 
         run = ctx.sandbox.run(args, timeout=ctx.config.thresholds.command_timeout_s)
         evidence = self.save_evidence(ctx, run)
+        missing = _missing_module(run.output())
+        if not run.ok and missing and not getattr(ctx.sandbox, "dependencies_ready", True):
+            # The code was never really tested: the environment could not
+            # import a dependency. That is not a verdict on the code, and it
+            # must not read like one either way.
+            return self._result(
+                ctx, Status.ERROR, "tests could not run: a dependency is missing",
+                evidence=evidence,
+                note=f"No module named {missing!r}. "
+                     + getattr(ctx.sandbox, "environment_note", ""),
+            )
         counts = _parse_counts(run.output())
         passed = counts.get("passed", 0)
         failed = counts.get("failed", 0) + counts.get("error", 0) + counts.get("errors", 0)
@@ -80,6 +91,14 @@ class TestGate(Gate):
             ctx, Status.PASS, f"{passed} test(s) passed",
             score=float(passed), evidence=evidence,
         )
+
+
+_MISSING = re.compile(r"No module named '([\w.]+)'")
+
+
+def _missing_module(output: str) -> str | None:
+    match = _MISSING.search(output)
+    return match.group(1) if match else None
 
 
 def _parse_counts(output: str) -> dict[str, int]:

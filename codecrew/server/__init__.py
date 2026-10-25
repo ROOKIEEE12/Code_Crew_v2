@@ -15,13 +15,15 @@ _REPO = Path(__file__).resolve().parents[2]
 
 
 def default_ui_dir() -> Path | None:
-    """``web/out`` from a source checkout, if the UI has been built."""
-    candidate = _REPO / "web" / "out"
-    return candidate if (candidate / "index.html").is_file() else None
+    """The built UI: packaged in a release wheel, or ``web/out`` in a checkout."""
+    for candidate in (Path(__file__).resolve().parent / "ui", _REPO / "web" / "out"):
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 def default_replays_dir() -> Path | None:
-    candidate = _REPO / "samples" / "replays"
+    candidate = Path(__file__).resolve().parents[1] / "replays"
     return candidate if candidate.is_dir() else None
 
 

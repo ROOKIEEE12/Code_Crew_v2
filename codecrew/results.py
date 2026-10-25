@@ -106,6 +106,12 @@ class GateReport:
     sandbox: str
     results: list[GateResult] = field(default_factory=list)
     duration_s: float = 0.0
+    #: Code under test as discovered for this run (POSIX, relative), so
+    #: everything derived from the report judges the same set of files.
+    sources: list[str] = field(default_factory=list)
+    #: Facts about how the run was set up: the execution environment, where
+    #: the configuration came from, the profile. Context, never verdicts.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -119,7 +125,18 @@ class GateReport:
 
     @property
     def skipped(self) -> list[GateResult]:
+        """Every gate that did not run, advisory ones included."""
         return [r for r in self.results if r.status is Status.SKIP]
+
+    @property
+    def unverified(self) -> list[GateResult]:
+        """Skipped gates that would have been able to block.
+
+        Only these lower the verdict. An advisory gate never decides the
+        verdict (its FAIL does not block), so its absence cannot either;
+        it is still listed under "what was not verified".
+        """
+        return [r for r in self.skipped if r.blocking]
 
     def counts(self) -> dict[str, int]:
         counts = {s.value: 0 for s in Status}
@@ -131,12 +148,34 @@ class GateReport:
         """Trust badge for the workspace as a whole."""
         if not self.passed:
             return "UNVERIFIED"
-        if self.skipped:
+        if self.unverified:
             return "PARTIALLY VERIFIED"
         return "VERIFIED"
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self, dict_factory=_json_dict_factory)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GateReport":
+        """Rebuild a report written by :meth:`write_json` (run history)."""
+        results = []
+        for raw in data.get("results", []):
+            findings = [Finding(severity=Severity(f.get("severity", "info")),
+                                code=f.get("code", ""), message=f.get("message", ""),
+                                file=f.get("file"), line=f.get("line"))
+                        for f in raw.get("findings", [])]
+            results.append(GateResult(
+                gate_id=raw["gate_id"], name=raw.get("name", raw["gate_id"]),
+                status=Status(raw["status"]), summary=raw.get("summary", ""),
+                score=raw.get("score"), findings=findings,
+                duration_s=raw.get("duration_s", 0.0),
+                blocking=raw.get("blocking", True), evidence=raw.get("evidence"),
+                note=raw.get("note")))
+        return cls(run_id=data.get("run_id", ""), workspace=data.get("workspace", ""),
+                   sandbox=data.get("sandbox", ""), results=results,
+                   duration_s=data.get("duration_s", 0.0),
+                   sources=list(data.get("sources", [])),
+                   notes=list(data.get("notes", [])))
 
     def write_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

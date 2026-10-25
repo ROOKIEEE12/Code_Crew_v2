@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..agents import ContractError, ProjectPlan, Spec
 from ..badges import Review, compute_badges, source_files
@@ -29,6 +29,9 @@ from ..docs import USAGE_FILE
 from ..gates import GateRunner
 from ..llm import LLMConfig
 from ..sandbox import get_sandbox
+
+if TYPE_CHECKING:
+    from .projects import ProjectRegistry
 
 MODES = ("single", "multi", "project")
 PROVIDERS = ("auto", "groq", "gemini", "ollama", "anthropic", "scripted")
@@ -146,9 +149,14 @@ class JobManager:
         gate_config: GateConfig | None = None,
         replays_dir: Path | None = None,
         eval_dir: Path | None = None,
+        registry: "ProjectRegistry | None" = None,
     ) -> None:
+        from .projects import ProjectRegistry
+
         #: Where `codecrew eval` writes its studies; read-only here.
         self.eval_dir = eval_dir
+        #: Projects the person registered; they are allowed paths too.
+        self.registry = registry or ProjectRegistry()
         if not roots:
             raise ValueError("at least one workspace root is required")
         self.roots = [root.resolve() for root in roots]
@@ -208,11 +216,64 @@ class JobManager:
         if not path.is_absolute():
             path = self.roots[0] / path
         path = path.resolve()
-        for root in self.roots:
+        for root in [*self.roots, *self.registry.paths()]:
+            root = root.resolve()
             if path == root or root in path.parents:
                 return path
-        raise JobError("that path is outside the workspace roots this server "
-                       "was started with (see `codecrew serve --root`)", 403)
+        raise JobError("that folder is not a registered project and not inside "
+                       "the workspace roots; add it as a project first", 403)
+
+    # -- projects -------------------------------------------------------------------
+
+    def projects(self) -> list[dict]:
+        """Registered projects first, then generated builds in the roots."""
+        from .projects import summarize_project
+
+        seen: set[Path] = set()
+        out = []
+        for path in self.registry.paths():
+            seen.add(path.resolve())
+            out.append(summarize_project(path, registered=True))
+        builds = []
+        for root in self.roots:
+            for child in root.iterdir():
+                if child.is_dir() and (child / WORK_DIR_NAME).is_dir() \
+                        and child.resolve() not in seen:
+                    builds.append(child)
+        builds.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        out += [summarize_project(p, registered=False) for p in builds[:100]]
+        return out
+
+    def add_project(self, raw: str) -> dict:
+        from .projects import ProjectError, summarize_project
+
+        try:
+            path = self.registry.add(raw)
+        except ProjectError as exc:
+            raise JobError(str(exc), exc.status) from exc
+        return summarize_project(path, registered=True)
+
+    def remove_project(self, raw: str) -> None:
+        self.registry.remove(raw)
+
+    def project_detail(self, raw: str, run_id: str | None = None) -> dict:
+        from .projects import ProjectError, project_detail
+
+        path = self.inside_roots(raw)
+        registered = path in [p.resolve() for p in self.registry.paths()]
+        try:
+            return project_detail(path, run_id, registered=registered)
+        except ProjectError as exc:
+            raise JobError(str(exc), exc.status) from exc
+
+    def project_file(self, raw: str, rel: str) -> dict:
+        from .projects import ProjectError, read_file
+
+        path = self.inside_roots(raw)
+        try:
+            return read_file(path, rel)
+        except ProjectError as exc:
+            raise JobError(str(exc), exc.status) from exc
 
     def workspaces(self) -> list[dict]:
         """Previous builds on disk, newest first."""
@@ -304,6 +365,11 @@ def _validate_existing(params: dict, manager: JobManager) -> dict:
     if not path.is_dir():
         raise JobError(f"not a directory: {path}", 404)
     clean: dict[str, Any] = {"workspace": str(path)}
+    if params["kind"] == "verify":
+        profile = params.get("profile", "full")
+        if profile not in ("full", "quick"):
+            raise JobError("'profile' must be 'full' or 'quick'")
+        clean["profile"] = profile
     if params["kind"] == "repair":
         rounds = params.get("rounds", 2)
         if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= 4:
@@ -387,10 +453,22 @@ def _run_repair(job: Job, manager: JobManager) -> dict:
 
 
 def _run_verify(job: Job, manager: JobManager) -> dict:
+    import copy
+
+    from ..project import PROFILES, Project, ProjectConfigError
+
     workspace = Path(job.params["workspace"])
-    config = _gate_config(manager)
-    sandbox = get_sandbox(workspace, config.sandbox)
-    runner = GateRunner(workspace, config, sandbox=sandbox,
+    config = copy.deepcopy(_gate_config(manager))
+    try:
+        project = Project.detect(workspace)
+    except ProjectConfigError as exc:
+        raise JobError(f"[tool.codecrew] is invalid: {exc}") from exc
+    project.apply(config)
+    profile = job.params.get("profile")
+    if profile:
+        config.disabled = tuple(dict.fromkeys([*config.disabled, *PROFILES[profile]]))
+    sandbox = get_sandbox(workspace, config.sandbox, project=project)
+    runner = GateRunner(workspace, config, sandbox=sandbox, project=project,
                         progress=lambda e: job.add_event(
                             {"kind": "gate_progress", **e}))
     report = runner.run()
@@ -446,12 +524,12 @@ def describe_workspace(path: Path, *, report=None, badges=None) -> dict:
     else:
         badge_list = [asdict(b) for b in badges]
 
-    from ..gates.base import EXCLUDED_DIRS, _is_test
+    from ..gates.base import _is_test, is_excluded_part
 
     files = []
     for file in sorted(path.rglob("*.py")):
         rel = file.relative_to(path)
-        if any(part in EXCLUDED_DIRS for part in rel.parts) or rel.name == "conftest.py":
+        if any(is_excluded_part(part) for part in rel.parts) or rel.name == "conftest.py":
             continue
         files.append(_file_entry(rel.as_posix(), _read(file) or "", _is_test(rel)))
 

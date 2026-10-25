@@ -1,27 +1,54 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "codecrew"
-version = "0.1.0"
-description = "A verification pipeline that happens to use AI to write the code"
+dynamic = ["version"]
+description = "AI writes the code; deterministic gates decide whether to trust it"
+readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["verification", "testing", "mutation-testing", "llm", "code-quality"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 # The gate layer is deliberately stdlib-only: it is the component that judges
 # everything else, so it must run with a bare Python install. Tools used by
 # the gates are pinned in codecrew/config.py and installed into the sandbox,
 # not into this project's environment.
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/ROOKIEEE12/Code_Crew_v2"
+Issues = "https://github.com/ROOKIEEE12/Code_Crew_v2/issues"
+
 [project.scripts]
 codecrew = "codecrew.__main__:main"
-
-[tool.setuptools.packages.find]
-include = ["codecrew*"]
 
 [project.optional-dependencies]
 # For running CodeCrew's own test suite on a machine without the sandbox.
 dev = ["pytest>=8.0"]
+
+[tool.setuptools.dynamic]
+version = { attr = "codecrew.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["codecrew*"]
+
+# The built web UI, copied into codecrew/server/ui by the release workflow.
+# In a source checkout it is web/out instead, and this matches nothing.
+[tool.setuptools.package-data]
+"codecrew.server" = ["ui/**/*"]
+# Offline demo scripts for the scripted provider (no model, no key).
+"codecrew" = ["replays/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

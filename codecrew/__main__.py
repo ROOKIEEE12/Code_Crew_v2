@@ -83,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also write the machine-readable report here")
     verify.add_argument("--markdown", type=Path, default=None,
                         help="also append a Markdown summary here")
+    verify.add_argument("--sarif", type=Path, default=None,
+                        help="also write SARIF (code scanning, editors)")
+    verify.add_argument("--profile", choices=("quick", "full"), default=None,
+                        help="quick skips mutation testing: fast, never VERIFIED")
+    verify.add_argument("--strict", action="store_true",
+                        help="exit 1 unless the verdict is VERIFIED")
+    verify.add_argument("--format", choices=("text", "json"), default=None)
     verify.add_argument("--quiet", action="store_true")
 
     ci = sub.add_parser(
@@ -101,8 +108,22 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--python", default="3.12")
     ci.add_argument("--disable", default=None,
                     help="comma-separated gate ids to skip in CI")
+    ci.add_argument("--code-scanning", action="store_true",
+                    help="also upload findings as SARIF, so they appear as "
+                         "pull-request annotations (needs code scanning)")
     ci.add_argument("--force", action="store_true",
                     help="overwrite an existing workflow")
+
+    init = sub.add_parser(
+        "init", help="set a repository up: config, .gitignore, optional CI "
+                     "and pre-commit")
+    init.add_argument("path", type=Path, nargs="?", default=Path("."))
+    init.add_argument("--ci", action="store_true",
+                      help="also write the GitHub Actions workflow")
+    init.add_argument("--code-scanning", action="store_true",
+                      help="with --ci: upload findings to code scanning")
+    init.add_argument("--pre-commit", action="store_true",
+                      help="also add the quick gates as a pre-commit hook")
     ci.add_argument("--print", dest="print_only", action="store_true",
                     help="print the workflow instead of writing it")
 
@@ -154,6 +175,29 @@ def build_parser() -> argparse.ArgumentParser:
                             "independent implementer and test author, spec "
                             "auto-approved. project: architect plus "
                             "per-module multi (for the project tasks)")
+
+    ev = sub.add_parser(
+        "eval",
+        help="run (or resume) the Phase 6 evaluation study, or report on it")
+    ev.add_argument("--name", default="main", help="study name (a directory)")
+    ev.add_argument("--root", type=Path, default=Path("eval_runs"))
+    ev.add_argument("--conditions", default="single,multi,multi_repair",
+                    help="comma-separated: single, multi, multi_repair")
+    ev.add_argument("--tasks", default=None,
+                    help="comma-separated task ids (default: the 10 original "
+                         "tasks plus the 4 hard ones)")
+    ev.add_argument("--reps", type=int, default=3)
+    ev.add_argument("--provider", default="auto")
+    ev.add_argument("--fast-model", default=None)
+    ev.add_argument("--strong-model", default=None)
+    ev.add_argument("--sandbox", choices=("auto", "docker", "local"), default="auto")
+    ev.add_argument("--disable", default=None,
+                    help="comma-separated gate ids to skip (recorded in the study)")
+    ev.add_argument("--max-mutants", type=int, default=None)
+    ev.add_argument("--max-cells", type=int, default=None,
+                    help="run at most this many cells now, then stop")
+    ev.add_argument("--report", action="store_true",
+                    help="do not run anything; write and print the report")
 
     compare = sub.add_parser(
         "compare", help="compare two benchmark results.json files side by side")
@@ -327,7 +371,9 @@ def _bench(args: argparse.Namespace) -> int:
     )
 
     if args.list:
-        for task in (*TASKS, *PROJECT_TASKS):
+        from .bench.hard_tasks import HARD_TASKS
+
+        for task in (*TASKS, *HARD_TASKS, *PROJECT_TASKS):
             print(f"{task.id:16} {task.tier:9} {task.module}")
         return 0
 
@@ -375,16 +421,79 @@ def _bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _eval(args: argparse.Namespace) -> int:
+    import json
+
+    from .bench.ablation import (
+        STUDY_FILE,
+        Study,
+        StudyMismatch,
+        render_markdown,
+        summarize_study,
+    )
+    from .bench.hard_tasks import HARD_TASKS
+    from .bench.tasks import TASKS, get_tasks
+
+    path = args.root.resolve() / args.name
+    if args.report:
+        if not (path / STUDY_FILE).exists():
+            print(f"error: no study at {path}", file=sys.stderr)
+            return 2
+        summary = summarize_study(path)
+        text = render_markdown(summary)
+        (path / "report.md").write_text(text, encoding="utf-8")
+        (path / "summary.json").write_text(json.dumps(summary, indent=2),
+                                           encoding="utf-8")
+        print(text)
+        print(f"written: {path / 'report.md'}")
+        return 0
+
+    try:
+        tasks = (get_tasks([t.strip() for t in args.tasks.split(",") if t.strip()])
+                 if args.tasks else [*TASKS, *HARD_TASKS])
+    except KeyError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+    tiers = None
+    if args.fast_model or args.strong_model:
+        tiers = ModelTiers(fast=args.fast_model, strong=args.strong_model)
+    gate_config = GateConfig(sandbox=args.sandbox)
+    if args.disable:
+        gate_config.disabled = tuple(
+            p.strip().upper() for p in args.disable.split(",") if p.strip())
+    if args.max_mutants is not None:
+        gate_config.thresholds.max_mutants = args.max_mutants
+
+    try:
+        study = Study(args.root, args.name, tasks=tasks,
+                      conditions=[c.strip() for c in args.conditions.split(",")
+                                  if c.strip()],
+                      reps=args.reps,
+                      llm_config=LLMConfig(provider=args.provider, tiers=tiers),
+                      gate_config=gate_config)
+        outcome = study.run(max_cells=args.max_cells)
+    except (ValueError, StudyMismatch, ProviderUnavailable) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"\nran {outcome['ran']} cell(s); {outcome['pending']} pending.")
+    if outcome["stopped"]:
+        print("Stopped early (usually the free-tier quota). Re-run the same "
+              "command later to resume.")
+    print(f"Report: codecrew eval --name {args.name} --report")
+    return 0
+
+
 def _verify(args: argparse.Namespace) -> int:
     from .gates.__main__ import main as gates_main
 
     forwarded = ["run", str(args.workspace)]
-    for flag in ("sandbox", "disable", "json", "markdown"):
+    for flag in ("sandbox", "disable", "json", "markdown", "sarif", "profile", "format"):
         value = getattr(args, flag)
         if value is not None:
             forwarded += [f"--{flag}", str(value)]
-    if args.quiet:
-        forwarded.append("--quiet")
+    for flag in ("quiet", "strict"):
+        if getattr(args, flag):
+            forwarded.append(f"--{flag}")
     return gates_main(forwarded)
 
 
@@ -396,6 +505,7 @@ def _ci_export(args: argparse.Namespace) -> int:
         ref=args.ref, python=args.python,
         disable=tuple(p.strip().upper() for p in (args.disable or "").split(",")
                       if p.strip()),
+        code_scanning=args.code_scanning,
     )
     try:
         if args.print_only:
@@ -407,6 +517,28 @@ def _ci_export(args: argparse.Namespace) -> int:
         return 2
     print(f"wrote {path}")
     print("Commit it, and every push and pull request re-runs the gates.")
+    return 0
+
+
+def _init(args: argparse.Namespace) -> int:
+    from .init import init_project
+
+    try:
+        result = init_project(args.path, ci=args.ci, pre_commit=args.pre_commit,
+                              code_scanning=args.code_scanning)
+    except (FileNotFoundError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    for item in result.written:
+        print(f"  wrote  {item}")
+    for item in result.kept:
+        print(f"  kept   {item} (already there)")
+    for note in result.notes:
+        print("\n" + note)
+    print("\nNext:")
+    print("  codecrew verify .                 # every gate, with evidence")
+    print("  codecrew verify . --profile quick # fast check while you work")
+    print("  codecrew serve                    # the web UI")
     return 0
 
 
@@ -425,8 +557,12 @@ def main(argv: list[str] | None = None) -> int:
         return _build(args)
     if args.command == "verify":
         return _verify(args)
+    if args.command == "eval":
+        return _eval(args)
     if args.command == "ci-export":
         return _ci_export(args)
+    if args.command == "init":
+        return _init(args)
     if args.command == "serve":
         return _serve(args)
     if args.command == "bench":

@@ -18,6 +18,12 @@ from ..config import SANDBOX_REQUIREMENTS
 from .base import ExecResult, Sandbox, SandboxError
 
 
+def _last_error(stderr: str) -> str:
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    errors = [line for line in lines if line.startswith("ERROR")]
+    return (errors[-1] if errors else (lines[-1] if lines else "pip failed"))[:300]
+
+
 def default_venv_dir() -> Path:
     """Shared tool environment, outside any workspace.
 
@@ -31,20 +37,54 @@ def default_venv_dir() -> Path:
     return Path.home() / ".codecrew" / "venv"
 
 
+def _python_in(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
 class LocalSandbox(Sandbox):
     name = "local-venv"
     strict = False
 
-    def __init__(self, workspace: Path, venv_dir: Path | None = None) -> None:
+    def __init__(self, workspace: Path, venv_dir: Path | None = None,
+                 project=None) -> None:
         super().__init__(workspace)
         self.venv_dir = venv_dir or default_venv_dir()
         self._module_cache: dict[str, bool] = {}
+        #: A codecrew.project.Project; decides whether a project
+        #: environment (the project's own dependencies) is needed.
+        self.project = project
+        #: Set when the project's dependencies live in their own venv.
+        self.env_dir: Path | None = None
+        #: False when the project declares dependencies that are not
+        #: installed, so an ImportError in its tests is about the
+        #: environment rather than the code.
+        self.dependencies_ready = True
+        #: One sentence for the report about the execution environment.
+        self.environment_note = ""
+        #: "src" for a src-layout project: put on PYTHONPATH so the tests
+        #: import the code the way the project's own config says to.
+        self._source_root = getattr(project, "source_root", "") or ""
 
     @property
     def python(self) -> Path:
-        if os.name == "nt":
-            return self.venv_dir / "Scripts" / "python.exe"
-        return self.venv_dir / "bin" / "python"
+        return _python_in(self.venv_dir)
+
+    @property
+    def run_python(self) -> Path:
+        """The interpreter commands run with: the project env when there is one."""
+        return _python_in(self.env_dir) if self.env_dir else self.python
+
+    def for_workspace(self, workspace: Path) -> "LocalSandbox":
+        """Same environment, different directory (a scratch copy, say)."""
+        clone = LocalSandbox(workspace, self.venv_dir, self.project)
+        clone.env_dir = self.env_dir
+        clone.dependencies_ready = self.dependencies_ready
+        clone.environment_note = self.environment_note
+        clone._module_cache = dict(self._module_cache)
+        clone._source_root = getattr(self, "_source_root", "")
+        return clone
 
     @property
     def _stamp(self) -> Path:
@@ -55,6 +95,10 @@ class LocalSandbox(Sandbox):
         return hashlib.sha256(joined.encode()).hexdigest()[:16]
 
     def ensure(self) -> None:
+        self._ensure_tools()
+        self._ensure_project_env()
+
+    def _ensure_tools(self) -> None:
         digest = self._requirements_digest()
         if self.python.exists() and self._stamp.exists():
             if self._stamp.read_text(encoding="utf-8").strip() == digest:
@@ -89,9 +133,90 @@ class LocalSandbox(Sandbox):
         self._stamp.write_text(digest, encoding="utf-8")
         self._module_cache.clear()
 
+    # -- the project's own dependencies -------------------------------------------
+
+    def _ensure_project_env(self) -> None:
+        """Give a project with declared dependencies an environment that has them.
+
+        One venv per distinct dependency set, under ~/.codecrew/envs, shared
+        by every project that declares the same set and never written into
+        the project itself. The gate tools are not reinstalled: a .pth file
+        makes the tool venv's packages importable from it, after the
+        project's own (so a project pinning its own pytest gets that one).
+        """
+        project = self.project
+        if project is None or not project.has_dependencies():
+            return
+        if not project.should_install():
+            self.dependencies_ready = False
+            self.environment_note = (
+                "The project declares dependencies that were NOT installed "
+                "(a generated project; set install-dependencies = true in "
+                "[tool.codecrew] to allow it).")
+            return
+
+        key = hashlib.sha256(
+            f"{self._requirements_digest()}|{project.dependency_digest()}|"
+            f"{sys.version_info[:2]}".encode()).hexdigest()[:16]
+        env_dir = self.venv_dir.parent / "envs" / key
+        stamp = env_dir / ".codecrew-ready"
+        if stamp.exists() and _python_in(env_dir).exists():
+            self._use_env(env_dir, cached=True)
+            return
+
+        log = self.venv_dir.parent / "envs" / f"{key}.install.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if not _python_in(env_dir).exists():
+                # Built from the tool venv's interpreter, so the Python
+                # version (and so the .pth'd tool packages) always match.
+                made = subprocess.run(
+                    [str(self.python), "-m", "venv", str(env_dir)],
+                    capture_output=True, text=True, timeout=300)
+                if made.returncode != 0:
+                    raise SandboxError(made.stderr[-600:])
+            tool_site = self._purelib(self.python)
+            env_site = self._purelib(_python_in(env_dir))
+            Path(env_site, "_codecrew_tools.pth").write_text(tool_site + "\n",
+                                                             encoding="utf-8")
+            install = subprocess.run(
+                [str(_python_in(env_dir)), "-m", "pip", "install",
+                 "--disable-pip-version-check", "--quiet", *project.install_args()],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=1200, cwd=str(project.root))
+            log.write_text(install.stdout + "\n" + install.stderr, encoding="utf-8")
+            if install.returncode != 0:
+                raise SandboxError(_last_error(install.stderr))
+        except (OSError, subprocess.SubprocessError, SandboxError) as exc:
+            self.dependencies_ready = False
+            self.environment_note = (
+                f"The project's dependencies could not be installed ({exc}). "
+                f"Tests that import them cannot run; see {log}.")
+            return
+        stamp.write_text(project.dependency_digest(), encoding="utf-8")
+        self._use_env(env_dir, cached=False)
+
+    def _use_env(self, env_dir: Path, *, cached: bool) -> None:
+        self.env_dir = env_dir
+        self.dependencies_ready = True
+        self._module_cache.clear()
+        count = len(self.project.dependencies) + len(self.project.requirement_files)
+        self.environment_note = (
+            f"Project dependencies installed in an isolated environment "
+            f"({'cached' if cached else 'created'}: {env_dir}); "
+            f"{count} declaration(s).")
+
+    def _purelib(self, python: Path) -> str:
+        done = subprocess.run(
+            [str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            capture_output=True, text=True, timeout=60)
+        if done.returncode != 0 or not done.stdout.strip():
+            raise SandboxError(f"cannot locate site-packages for {python}")
+        return done.stdout.strip()
+
     def _resolve(self, args: list[str]) -> list[str]:
         if args and args[0] == "python":
-            return [str(self.python), *args[1:]]
+            return [str(self.run_python), *args[1:]]
         return list(args)
 
     def _env(self) -> dict[str, str]:
@@ -102,6 +227,8 @@ class LocalSandbox(Sandbox):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         env.pop("PYTHONPATH", None)
+        if self._source_root:
+            env["PYTHONPATH"] = str(self.workspace / self._source_root)
         return env
 
     def run(self, args: list[str], *, timeout: int, cwd: str | None = None) -> ExecResult:

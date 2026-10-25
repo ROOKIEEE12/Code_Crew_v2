@@ -41,6 +41,9 @@ class Thresholds:
     max_security_severity: str = "medium"
     #: Per-command wall clock limit inside the sandbox.
     command_timeout_s: int = 300
+    #: Per-test limit (pytest-timeout), so one hung test is a failure, not a
+    #: stalled run.
+    test_timeout_s: int = 60
     #: Mutation testing is slow; cap the whole gate and each mutant run.
     mutation_timeout_s: int = 900
     mutant_timeout_s: int = 60

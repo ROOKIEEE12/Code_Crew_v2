@@ -160,3 +160,70 @@ def test_http_404_is_not_retried_and_names_the_fix(monkeypatch):
     with pytest.raises(ProviderUnavailable) as exc:
         post_json("http://x", {})
     assert "CODECREW_MODEL_STRONG" in str(exc.value)
+
+
+# -- reasoning models that spend the whole budget thinking -------------------------
+
+from codecrew.llm.base import Provider  # noqa: E402
+
+
+class _ThinksTooLong(Provider):
+    """Empty and truncated until it is given enough tokens (gpt-oss-20b, live)."""
+
+    name = "groq"
+
+    def __init__(self, enough: int) -> None:
+        self.enough = enough
+        self.seen: list[int] = []
+
+    def available(self):
+        return True, ""
+
+    def complete(self, messages, *, model=None, temperature=0.0, max_tokens=4096,
+                 timeout=120):
+        from codecrew.llm.base import Completion, Usage
+        self.seen.append(max_tokens)
+        if max_tokens < self.enough:
+            return Completion(text="", provider="groq", model="m", latency_s=0.0,
+                              usage=Usage(10, max_tokens), finish_reason="length")
+        return Completion(text='{"ok": true}', provider="groq", model="m",
+                          latency_s=0.0, usage=Usage(10, 50), finish_reason="stop")
+
+
+def test_an_empty_truncated_answer_is_retried_with_a_larger_budget():
+    from codecrew.llm import LLMClient, LLMConfig, Message
+    provider = _ThinksTooLong(enough=8192)
+    client = LLMClient(LLMConfig(provider="groq", backoff_base_s=0.0), provider=provider)
+    completion = client.complete([Message("user", "hi")])
+    assert completion.text == '{"ok": true}'
+    assert provider.seen == [4096, 8192]
+    # The next call starts with the budget that worked.
+    client.complete([Message("user", "again")])
+    assert provider.seen[-1] == 8192
+
+
+def test_a_cut_off_answer_raises_the_budget_for_the_next_call():
+    from codecrew.llm import LLMClient, LLMConfig, Message
+    from codecrew.llm.base import Completion, Usage
+
+    class CutOff(_ThinksTooLong):
+        def complete(self, messages, **kw):
+            self.seen.append(kw["max_tokens"])
+            return Completion(text='{"files": [', provider="groq", model="m",
+                              latency_s=0.0, usage=Usage(1, 1), finish_reason="length")
+
+    provider = CutOff(enough=0)
+    client = LLMClient(LLMConfig(provider="groq", backoff_base_s=0.0), provider=provider)
+    assert client.complete([Message("user", "a")]).text == '{"files": ['  # returned
+    client.complete([Message("user", "b")])
+    assert provider.seen == [4096, 8192]
+
+
+def test_the_budget_has_a_ceiling():
+    from codecrew.llm import LLMClient, LLMConfig, Message
+    from codecrew.llm.client import MAX_TOKEN_BUDGET
+    provider = _ThinksTooLong(enough=10 ** 9)
+    client = LLMClient(LLMConfig(provider="groq", backoff_base_s=0.0, max_retries=8),
+                       provider=provider)
+    completion = client.complete([Message("user", "hi")])
+    assert completion.text == "" and max(provider.seen) == MAX_TOKEN_BUDGET

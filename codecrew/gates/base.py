@@ -11,14 +11,24 @@ import abc
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..config import WORK_DIR_NAME, GateConfig
+
+if TYPE_CHECKING:
+    from ..project import Project
 from ..results import GateResult, Status
 from ..sandbox import ExecResult, Sandbox
 
 #: Paths excluded from analysis: our own scaffolding, not code under test.
 EXCLUDED_DIRS = {WORK_DIR_NAME, ".git", "__pycache__", ".pytest_cache", ".mypy_cache",
-                 ".ruff_cache", "venv", ".venv", "node_modules", ".mutmut-cache"}
+                 ".ruff_cache", "venv", ".venv", "env", "node_modules", ".mutmut-cache",
+                 ".tox", ".nox", ".eggs", "site-packages", "htmlcov", "build", "dist",
+                 ".hg", ".svn", ".idea", ".vscode"}
+
+
+def is_excluded_part(part: str) -> bool:
+    return part in EXCLUDED_DIRS or part.endswith(".egg-info")
 
 
 @dataclass
@@ -32,6 +42,8 @@ class GateContext:
     #: Populated by :meth:`discover`.
     source_files: list[Path] = field(default_factory=list)
     test_files: list[Path] = field(default_factory=list)
+    #: The codecrew.project.Project, when known: layout and exclusions.
+    project: "Project | None" = None
 
     @classmethod
     def build(
@@ -40,8 +52,9 @@ class GateContext:
         sandbox: Sandbox,
         config: GateConfig,
         evidence_dir: Path,
+        project=None,
     ) -> "GateContext":
-        ctx = cls(workspace.resolve(), sandbox, config, evidence_dir)
+        ctx = cls(workspace.resolve(), sandbox, config, evidence_dir, project=project)
         ctx.discover()
         return ctx
 
@@ -49,9 +62,12 @@ class GateContext:
         """Split the workspace into code under test and its tests."""
         sources: list[Path] = []
         tests: list[Path] = []
+        excluded = getattr(self.project, "is_excluded", None)
         for path in sorted(self.workspace.rglob("*.py")):
             rel = path.relative_to(self.workspace)
-            if any(part in EXCLUDED_DIRS for part in rel.parts):
+            if any(is_excluded_part(part) for part in rel.parts):
+                continue
+            if excluded is not None and excluded(rel.as_posix()):
                 continue
             if _is_test(rel):
                 tests.append(rel)
@@ -76,8 +92,14 @@ class GateContext:
         project has one, otherwise the individual top-level modules.
         """
         roots: list[str] = []
+        source_root = getattr(self.project, "source_root", "")
         for rel in self.source_files:
-            top = rel.parts[0]
+            parts = rel.parts
+            if source_root and parts[0] == source_root and len(parts) > 1:
+                # src layout: the importable name is one level down. The
+                # path tools (coverage) still get the real directory.
+                parts = parts[1:]
+            top = parts[0]
             if top.endswith(".py"):
                 name = top[:-3]
                 if name != "__init__" and name not in roots:

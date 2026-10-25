@@ -4,342 +4,278 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import { Pill, VerdictPill, toneOf } from "@/components/Verdict";
-import {
-  api,
-  type BuildRequest,
-  type Health,
-  type JobSummary,
-  type WorkspaceSummary,
-} from "@/lib/api";
+import { useToast } from "@/components/Toast";
+import { VerdictDots } from "@/components/Trend";
+import { Pill, VerdictPill } from "@/components/Verdict";
+import { projectsApi, type ProjectSummary } from "@/lib/api";
+import { timeAgo } from "@/lib/fixprompt";
+import { requestNotifications } from "@/lib/notify";
 
-const EXAMPLES = [
-  "A function that validates a password: at least 12 characters, one digit, one uppercase letter, and not one of the 20 most common passwords. Return a list of the rules it breaks.",
-  "Parse a duration like '1h30m', '45s' or '2h' into total seconds. Reject anything else with ValueError.",
-  "Merge overlapping intervals given as (start, end) tuples and return them sorted.",
-];
-
-const MODES: { value: BuildRequest["mode"]; label: string; help: string }[] = [
-  {
-    value: "multi",
-    label: "Multi-agent (recommended)",
-    help: "Spec, your review, then an implementer and a test author who never see each other's work.",
-  },
-  {
-    value: "single",
-    label: "Single agent (baseline)",
-    help: "One agent writes code and its own tests, like a typical AI assistant. Same gates judge it.",
-  },
-  {
-    value: "project",
-    label: "Project (several modules)",
-    help: "An architect splits the requirement into modules; each is built the multi-agent way.",
-  },
-];
-
-export default function Home() {
+export default function ProjectsPage() {
   const router = useRouter();
-  const [health, setHealth] = useState<Health | null>(null);
-  const [offline, setOffline] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<JobSummary[]>([]);
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
-
-  const [requirement, setRequirement] = useState("");
-  const [mode, setMode] = useState<BuildRequest["mode"]>("multi");
-  const [provider, setProvider] = useState("auto");
-  const [script, setScript] = useState("");
-  const [repair, setRepair] = useState(2);
-  const [approval, setApproval] = useState<"review" | "auto">("review");
-  const [verifyPath, setVerifyPath] = useState("");
+  const toast = useToast();
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [path, setPath] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [starting, setStarting] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [j, w] = await Promise.all([api.jobs(), api.workspaces()]);
-      setJobs(j.jobs);
-      setWorkspaces(w.workspaces);
-      setOffline(null);
-    } catch (err) {
-      setOffline(err instanceof Error ? err.message : String(err));
-    }
+  const load = useCallback(() => {
+    projectsApi
+      .list()
+      .then((r) => {
+        setProjects(r.projects);
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
   useEffect(() => {
-    api
-      .health()
-      .then((h) => {
-        setHealth(h);
-        const live = h.providers.find((p) => p.ready && p.name !== "scripted");
-        if (!live) setProvider("scripted");
-        if (h.replays[0]) setScript(h.replays.includes("clamp_multi.json") ? "clamp_multi.json" : h.replays[0]);
-      })
-      .catch((err) => setOffline(err instanceof Error ? err.message : String(err)));
-    void refresh();
-    const timer = setInterval(refresh, 4000);
+    load();
+    const timer = setInterval(load, 10000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [load]);
 
-  async function submit(body: Parameters<typeof api.submit>[0]) {
-    setBusy(true);
-    setError(null);
+  async function add() {
+    if (!path.trim()) return;
+    setAdding(true);
     try {
-      const job = await api.submit(body);
-      router.push(`/job/?id=${job.id}`);
+      const project = await projectsApi.add(path.trim());
+      toast(`Added ${project.name}.`, "ok");
+      setPath("");
+      load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setBusy(false);
+      toast(err instanceof Error ? err.message : String(err), "bad");
+    } finally {
+      setAdding(false);
     }
   }
 
-  const ready = health?.providers.filter((p) => p.ready) ?? [];
-  const live = ready.filter((p) => p.name !== "scripted");
+  async function check(project: ProjectSummary, profile: "quick" | "full") {
+    setStarting(`${project.path}:${profile}`);
+    requestNotifications();
+    try {
+      const job = await projectsApi.verify(project.path, profile);
+      router.push(`/job/?id=${job.id}`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "bad");
+      setStarting(null);
+    }
+  }
+
+  const mine = projects?.filter((p) => p.registered) ?? [];
+  const builds = projects?.filter((p) => !p.registered) ?? [];
 
   return (
     <div className="space-y-8">
-      <section className="max-w-3xl">
-        <h1 className="text-3xl font-bold tracking-tight">Code you can check, not just code that looks right.</h1>
-        <p className="mt-2 text-muted">
-          Describe what you need. AI agents write the code and the tests; then eight deterministic gates (tests,
-          branch coverage, mutation testing, security scans, spec conformance) decide the verdict. No agent gets to
-          say its own work is done.
-        </p>
-      </section>
-
-      {offline ? (
-        <div className="card border-bad/40 bg-bad-soft p-4 text-sm text-bad">
-          {offline}
-          <pre className="code mt-2 px-3 text-fg">codecrew serve</pre>
+      <header className="flex flex-wrap items-end gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-bold tracking-tight">Projects</h1>
+          <p className="mt-1 text-muted">
+            Check a codebase with real tests, branch coverage, mutation testing, security and dependency checks. The
+            verdict comes from the tools, not from an AI.
+          </p>
         </div>
-      ) : null}
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <form
-          className="card space-y-5 p-5"
+          className="flex w-full gap-2 sm:w-auto"
           onSubmit={(e) => {
             e.preventDefault();
-            void submit({
-              kind: "build",
-              requirement,
-              mode,
-              provider,
-              repair: mode === "single" ? 0 : repair,
-              approval,
-              ...(provider === "scripted" ? { script } : {}),
-            });
+            void add();
           }}
         >
-          <div>
-            <label htmlFor="req" className="mb-1 block font-semibold">
-              What should it do?
-            </label>
-            <textarea
-              id="req"
-              className="field h-36"
-              placeholder="Plain language is fine. Say what should happen on bad input; anything you leave out becomes an assumption you will be asked to check."
-              value={requirement}
-              onChange={(e) => setRequirement(e.target.value)}
-              maxLength={8000}
-              required
-            />
-            <div className="mt-1 flex flex-wrap gap-2 text-xs">
-              <span className="text-muted">Try:</span>
-              {EXAMPLES.map((ex) => (
-                <button type="button" key={ex} className="text-accent hover:underline" onClick={() => setRequirement(ex)}>
-                  {ex.split(":")[0]!.split(" ").slice(0, 5).join(" ")}…
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <fieldset>
-            <legend className="mb-2 font-semibold">How should it be built?</legend>
-            <div className="grid gap-2 sm:grid-cols-3">
-              {MODES.map((m) => (
-                <label
-                  key={m.value}
-                  className={`cursor-pointer rounded-lg border p-3 text-sm ${
-                    mode === m.value ? "border-accent bg-accent-soft" : "border-line"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="mode"
-                    className="sr-only"
-                    checked={mode === m.value}
-                    onChange={() => setMode(m.value)}
-                  />
-                  <span className="font-semibold">{m.label}</span>
-                  <span className="mt-1 block text-xs text-muted">{m.help}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div>
-              <label htmlFor="provider" className="mb-1 block text-sm font-semibold">
-                Model
-              </label>
-              <select id="provider" className="field" value={provider} onChange={(e) => setProvider(e.target.value)}>
-                {live.length > 0 ? <option value="auto">auto (first available free tier)</option> : null}
-                {live.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-                <option value="scripted">scripted replay (offline demo)</option>
-              </select>
-            </div>
-            {provider === "scripted" ? (
-              <div>
-                <label htmlFor="script" className="mb-1 block text-sm font-semibold">
-                  Replay
-                </label>
-                <select id="script" className="field" value={script} onChange={(e) => setScript(e.target.value)}>
-                  {(health?.replays ?? []).map((r) => (
-                    <option key={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
-            {mode !== "single" ? (
-              <>
-                <div>
-                  <label htmlFor="repair" className="mb-1 block text-sm font-semibold">
-                    Repair rounds
-                  </label>
-                  <select id="repair" className="field" value={repair} onChange={(e) => setRepair(Number(e.target.value))}>
-                    {[0, 1, 2, 3, 4].map((n) => (
-                      <option key={n} value={n}>
-                        {n === 0 ? "0 (off)" : n}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="approval" className="mb-1 block text-sm font-semibold">
-                    Spec review
-                  </label>
-                  <select
-                    id="approval"
-                    className="field"
-                    value={approval}
-                    onChange={(e) => setApproval(e.target.value as "review" | "auto")}
-                  >
-                    <option value="review">I review it first</option>
-                    <option value="auto">Auto-approve (verdict will say so)</option>
-                  </select>
-                </div>
-              </>
-            ) : null}
-          </div>
-
-          {provider === "scripted" ? (
-            <p className="text-xs text-muted">
-              A scripted replay feeds recorded model answers, so the demo runs offline and free. Your requirement text is
-              recorded but does not change the replayed code; the gates still run for real.
-            </p>
-          ) : null}
-          {error ? <p className="rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">{error}</p> : null}
-
-          <button className="btn btn-primary" disabled={busy || !requirement.trim() || !!offline}>
-            {busy ? "Starting…" : "Build and verify"}
+          <label htmlFor="add-path" className="sr-only">
+            Project folder
+          </label>
+          <input
+            id="add-path"
+            className="field font-mono text-xs sm:w-80"
+            placeholder={"C:\\code\\my-project  or  /home/me/my-project"}
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+          />
+          <button className="btn btn-primary shrink-0" disabled={adding || !path.trim()}>
+            {adding ? "Adding…" : "Add project"}
           </button>
         </form>
+      </header>
 
-        <aside className="space-y-4">
-          <div className="card p-4 text-sm">
-            <h2 className="mb-2 font-semibold">Status</h2>
-            {health ? (
-              <ul className="space-y-1">
-                {health.providers.map((p) => (
-                  <li key={p.name} className="flex items-center justify-between gap-2">
-                    <span>{p.name}</span>
-                    <Pill tone={p.ready ? "ok" : "muted"} title={p.reason}>
-                      {p.ready ? "ready" : "not set up"}
-                    </Pill>
-                  </li>
-                ))}
-                <li className="flex items-center justify-between gap-2 border-t border-line pt-1">
-                  <span>sandbox</span>
-                  <Pill tone={health.sandbox.docker ? "ok" : "warn"}>{health.sandbox.docker ? "docker" : "local venv"}</Pill>
-                </li>
-              </ul>
-            ) : (
-              <p className="text-muted">Connecting…</p>
-            )}
-            {health && live.length === 0 ? (
-              <p className="mt-2 text-xs text-muted">
-                No live model configured. Set GROQ_API_KEY or GEMINI_API_KEY (both free), or run Ollama, then restart{" "}
-                <code>codecrew serve</code>.
-              </p>
-            ) : null}
+      {error ? <p className="rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">{error}</p> : null}
+
+      {projects === null && !error ? <CardSkeletons /> : null}
+
+      {projects !== null && mine.length === 0 ? <Welcome /> : null}
+
+      {mine.length > 0 ? (
+        <section aria-labelledby="mine">
+          <h2 id="mine" className="sr-only">
+            Your projects
+          </h2>
+          <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {mine.map((p) => (
+              <ProjectCard key={p.path} project={p} onCheck={check} starting={starting} />
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {builds.length > 0 ? (
+        <section aria-labelledby="builds" className="space-y-3">
+          <div className="flex items-baseline justify-between">
+            <h2 id="builds" className="font-semibold">
+              AI builds
+            </h2>
+            <Link href="/build/" className="text-sm text-accent hover:underline">
+              New build →
+            </Link>
           </div>
+          <ul className="card divide-y divide-line">
+            {builds.slice(0, 15).map((b) => (
+              <li key={b.path}>
+                <Link
+                  href={`/project/?path=${encodeURIComponent(b.path)}`}
+                  className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-surface-2"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{b.name}</span>
+                  <VerdictDots runs={b.history.slice(-6)} />
+                  <VerdictPill verdict={b.latest?.verdict} />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+}
 
-          <form
-            className="card space-y-2 p-4 text-sm"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit({ kind: "verify", workspace: verifyPath });
-            }}
-          >
-            <h2 className="font-semibold">Verify existing code</h2>
-            <p className="text-xs text-muted">Run only the gates, no AI, on a folder inside {health?.roots[0] ?? "the workspace root"}.</p>
-            <input
-              className="field font-mono text-xs"
-              placeholder="my-project"
-              value={verifyPath}
-              onChange={(e) => setVerifyPath(e.target.value)}
-              required
-            />
-            <button className="btn" disabled={busy || !verifyPath.trim() || !!offline}>
-              Run the gates
-            </button>
-          </form>
-        </aside>
+function ProjectCard({
+  project,
+  onCheck,
+  starting,
+}: {
+  project: ProjectSummary;
+  onCheck: (p: ProjectSummary, profile: "quick" | "full") => void;
+  starting: string | null;
+}) {
+  const latest = project.latest;
+  const href = `/project/?path=${encodeURIComponent(project.path)}`;
+  return (
+    <li className="card flex flex-col p-4">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <Link href={href} className="font-semibold hover:text-accent hover:underline">
+            {project.name}
+          </Link>
+          <p className="truncate font-mono text-xs text-muted" title={project.path}>
+            {project.path}
+          </p>
+        </div>
+        {!project.exists ? <Pill tone="bad">folder missing</Pill> : <VerdictPill verdict={latest?.verdict} />}
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <section>
-          <h2 className="mb-2 font-semibold">This session</h2>
-          {jobs.length === 0 ? (
-            <p className="text-sm text-muted">No jobs yet.</p>
-          ) : (
-            <ul className="card divide-y divide-line">
-              {jobs.map((job) => (
-                <li key={job.id}>
-                  <Link href={`/job/?id=${job.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2">
-                    <Pill tone={toneOf(job.status)}>{job.status.replace("_", " ")}</Pill>
-                    <span className="min-w-0 flex-1 truncate text-sm">{job.title}</span>
-                    {job.verdict ? <VerdictPill verdict={job.verdict} /> : null}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-        <section>
-          <h2 className="mb-2 font-semibold">Previous builds</h2>
-          {workspaces.length === 0 ? (
-            <p className="text-sm text-muted">Nothing on disk yet.</p>
-          ) : (
-            <ul className="card divide-y divide-line">
-              {workspaces.slice(0, 12).map((w) => (
-                <li key={w.path}>
-                  <Link
-                    href={`/workspace/?path=${encodeURIComponent(w.path)}`}
-                    className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2"
-                  >
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{w.name}</span>
-                    <VerdictPill verdict={w.verdict} />
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      {latest ? (
+        <>
+          <dl className="mt-4 grid grid-cols-3 gap-2 text-center">
+            <Stat label="tests" value={latest.tests === null ? "–" : String(latest.tests)} />
+            <Stat label="coverage" value={latest.coverage === null ? "–" : `${latest.coverage.toFixed(0)}%`} />
+            <Stat label="mutation" value={latest.mutation === null ? "–" : `${latest.mutation.toFixed(0)}%`} />
+          </dl>
+          <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted">
+            <VerdictDots runs={project.history.slice(-8)} />
+            <span>
+              {timeAgo(latest.time)} · {latest.profile}
+            </span>
+          </div>
+        </>
+      ) : (
+        <p className="mt-4 text-sm text-muted">Never checked. Start with a quick check; it takes about a minute.</p>
+      )}
+
+      <div className="mt-4 flex gap-2 pt-1">
+        <button
+          className="btn flex-1 justify-center"
+          disabled={!project.exists || starting !== null}
+          onClick={() => onCheck(project, "quick")}
+          title="Everything except mutation testing. Fast; can never say VERIFIED."
+        >
+          {starting === `${project.path}:quick` ? "Starting…" : "Quick check"}
+        </button>
+        <button
+          className="btn btn-primary flex-1 justify-center"
+          disabled={!project.exists || starting !== null}
+          onClick={() => onCheck(project, "full")}
+          title="Every gate, mutation testing included."
+        >
+          {starting === `${project.path}:full` ? "Starting…" : "Full check"}
+        </button>
       </div>
+    </li>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-surface-2/70 px-2 py-2">
+      <dt className="text-[11px] uppercase tracking-wide text-muted">{label}</dt>
+      <dd className="text-lg font-semibold tabular-nums">{value}</dd>
+    </div>
+  );
+}
+
+function Welcome() {
+  return (
+    <section className="card grid grid-cols-1 gap-6 p-6 md:grid-cols-3">
+      <div className="md:col-span-3">
+        <h2 className="text-lg font-semibold">Start in under a minute</h2>
+        <p className="text-sm text-muted">Pick whichever fits what you are doing today.</p>
+      </div>
+      <Step n={1} title="Check code you already have">
+        Paste your project&apos;s folder above and press <strong>Add project</strong>, then <strong>Quick check</strong>.
+        Python projects with tests work best; dependencies in <code>pyproject.toml</code> or{" "}
+        <code>requirements.txt</code> are installed in an isolated environment.
+      </Step>
+      <Step n={2} title="Build something new with AI">
+        <Link href="/build/" className="text-accent underline">
+          Describe it
+        </Link>{" "}
+        in plain language. You review the spec, separate agents write code and tests, and the gates decide. There is an
+        offline demo if you have no model key yet.
+      </Step>
+      <Step n={3} title="Keep it checked">
+        Run <code>codecrew init --ci --pre-commit</code> in your repository so every commit and pull request runs the
+        same gates. See{" "}
+        <Link href="/setup/" className="text-accent underline">
+          Setup
+        </Link>
+        .
+      </Step>
+    </section>
+  );
+}
+
+function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-3 text-sm">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-soft font-bold text-accent">{n}</span>
+      <div>
+        <h3 className="font-semibold">{title}</h3>
+        <p className="mt-1 text-muted">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+function CardSkeletons() {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3" aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="card space-y-3 p-4">
+          <div className="skeleton h-5 w-1/2" />
+          <div className="skeleton h-3 w-3/4" />
+          <div className="skeleton h-16 w-full" />
+          <div className="skeleton h-9 w-full" />
+        </div>
+      ))}
     </div>
   );
 }

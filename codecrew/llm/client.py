@@ -14,6 +14,9 @@ from ..trace import NullTracer, Tracer
 from .base import Completion, LLMError, Message, Provider, ProviderUnavailable, RateLimited
 from .providers import AUTO_ORDER, PROVIDERS, ScriptedProvider
 
+#: Ceiling for the token budget when an answer comes back empty and truncated.
+MAX_TOKEN_BUDGET = 16384
+
 
 class TaskKind(str, enum.Enum):
     """What an agent is asking the model to do.
@@ -122,6 +125,8 @@ class LLMClient:
             or ModelTiers()
         )
         self.tiers = _apply_env_overrides(base_tiers)
+        #: model -> token budget it has been seen to need (see complete()).
+        self._budget: dict[str, int] = {}
 
     def complete(
         self,
@@ -135,7 +140,9 @@ class LLMClient:
         """Call the model, retrying transient rate limits."""
         model = self.tiers.model_for(kind)
         temp = self.config.temperature if temperature is None else temperature
-        limit = max_tokens or self.config.max_tokens
+        # A model that once needed a larger budget to answer at all gets it
+        # from the start next time, instead of failing empty again.
+        limit = max(max_tokens or self.config.max_tokens, self._budget.get(model or "", 0))
         last_error: Exception | None = None
 
         for attempt in range(1, self.config.max_retries + 1):
@@ -188,6 +195,23 @@ class LLMClient:
                 # A truncated answer is a silent corruption source: the code
                 # it produces will be syntactically incomplete.
                 self.tracer.event("llm_truncated", agent=agent, model=completion.model)
+                # Any cut-off answer means the budget was too small for this
+                # model: later calls start larger (a cut-off answer is broken
+                # JSON or code, so the agent will ask again).
+                bigger = min(limit * 2, MAX_TOKEN_BUDGET)
+                self._budget[model or ""] = max(self._budget.get(model or "", 0), bigger)
+                if not completion.text.strip() and limit < MAX_TOKEN_BUDGET \
+                        and attempt < self.config.max_retries:
+                    # Found live with gpt-oss-20b: a reasoning model spent the
+                    # whole budget thinking and returned nothing. That is not
+                    # an answer to judge, so ask again with room to answer.
+                    limit = bigger
+                    last_error = LLMError("empty answer: the token budget went on reasoning")
+                    self.tracer.event(
+                        "llm_retry", agent=agent, task=kind.value, attempt=attempt,
+                        reason="empty_truncated", max_tokens=limit,
+                    )
+                    continue
             return completion
 
         raise LLMError(

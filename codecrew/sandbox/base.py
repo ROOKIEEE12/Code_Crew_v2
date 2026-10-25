@@ -84,6 +84,17 @@ class Sandbox(abc.ABC):
     def has_module(self, module: str) -> bool:
         """Whether an importable tool module is present in the environment."""
 
+    def for_workspace(self, workspace: Path) -> "Sandbox":
+        """A sandbox of the same kind, prepared the same way, for another
+        directory. Used to run mutants against a scratch copy, so the
+        project's own files are never modified."""
+        return type(self)(workspace)
+
+    #: False when the project's declared dependencies are not installed.
+    dependencies_ready: bool = True
+    #: One sentence about the execution environment, for the report.
+    environment_note: str = ""
+
     def isolation_notes(self) -> str:
         """Plain-language statement of what this backend does not protect."""
         if self.strict:

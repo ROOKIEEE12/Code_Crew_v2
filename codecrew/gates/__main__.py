@@ -13,8 +13,10 @@ from pathlib import Path
 
 from ..badges import Review, compute_badges
 from ..config import WORK_DIR_NAME, GateConfig
+from ..project import PROFILES, Project, ProjectConfigError
 from ..report import render, render_markdown
 from ..sandbox import get_sandbox
+from ..sarif import write_sarif
 from .runner import GateRunner, all_gate_ids
 
 
@@ -46,6 +48,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--markdown", type=Path, default=None,
                      help="also write a Markdown summary here (for a CI job "
                           "summary, e.g. $GITHUB_STEP_SUMMARY)")
+    run.add_argument("--sarif", type=Path, default=None,
+                     help="also write SARIF 2.1.0 here (GitHub code scanning, "
+                          "VS Code SARIF viewer)")
+    run.add_argument("--profile", choices=tuple(PROFILES), default=None,
+                     help="quick skips mutation testing (fast, never VERIFIED); "
+                          "full runs everything (default, or [tool.codecrew])")
+    run.add_argument("--strict", action="store_true",
+                     help="exit 1 unless the verdict is VERIFIED (PARTIALLY "
+                          "VERIFIED passes otherwise)")
+    run.add_argument("--format", choices=("text", "json"), default="text",
+                     help="what to print: the report, or the JSON report")
     run.add_argument("--quiet", action="store_true",
                      help="print only the verdict line")
 
@@ -53,8 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_config(args: argparse.Namespace) -> GateConfig:
+def _resolve_config(args: argparse.Namespace, project: Project | None) -> GateConfig:
     config = GateConfig.load(args.config)
+    if project is not None:
+        project.apply(config)
+    if args.profile:
+        config.disabled = tuple(dict.fromkeys(
+            [*config.disabled, *PROFILES[args.profile]]))
     if args.sandbox:
         config.sandbox = args.sandbox
     if args.disable:
@@ -88,7 +106,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a directory: {workspace}", file=sys.stderr)
         return 2
 
-    config = _resolve_config(args)
+    try:
+        project = Project.detect(workspace)
+    except ProjectConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    config = _resolve_config(args, project)
     only = _ids(args.only) if args.only else None
     if only:
         unknown = set(only) - set(all_gate_ids())
@@ -97,14 +120,20 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
 
-    sandbox = get_sandbox(workspace.resolve(), config.sandbox)
-    runner = GateRunner(workspace, config, sandbox=sandbox)
+    sandbox = get_sandbox(workspace.resolve(), config.sandbox, project=project)
+    progress = None
+    if args.format == "text" and not args.quiet and sys.stderr.isatty():
+        progress = _live_progress
+    runner = GateRunner(workspace, config, sandbox=sandbox, progress=progress,
+                        project=project)
     report = runner.run(only=only)
 
     report_path = args.json or (
         workspace / WORK_DIR_NAME / "reports" / f"{report.run_id}.json"
     )
     report.write_json(report_path)
+    if args.sarif:
+        write_sarif(report, workspace, args.sarif)
 
     badges = compute_badges(report, workspace) if not only else []
     review = Review.load(workspace.resolve())
@@ -114,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         with args.markdown.open("a", encoding="utf-8") as handle:
             handle.write(render_markdown(report, badges, note=note))
 
-    if args.quiet:
+    if args.format == "json":
+        print(report_path.read_text(encoding="utf-8"))
+    elif args.quiet:
         print(f"{report.verdict()}  ({report.run_id})")
     else:
         print(render(report, isolation=sandbox.isolation_notes()))
@@ -126,7 +157,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {badge.badge:20} {badge.path}")
         print(f"\nmachine-readable report: {report_path}")
 
+    if args.strict:
+        return 0 if report.verdict() == "VERIFIED" else 1
     return 0 if report.passed else 1
+
+
+def _live_progress(event: dict) -> None:
+    """One line per gate on stderr, so a long run is visibly alive."""
+    if event.get("phase") == "setup":
+        sys.stderr.write("  preparing the environment ...\n")
+    elif event.get("phase") == "start":
+        sys.stderr.write(f"  {event['gate']} {event['name']} ...")
+    elif event.get("phase") == "end":
+        mark = {"PASS": "pass", "FAIL": "FAIL", "SKIP": "skip",
+                "ERROR": "ERROR"}.get(event.get("status"), "?")
+        if event.get("summary") == "not run":
+            sys.stderr.write(f"  {event['gate']} {event['name']} ... {mark}\n")
+        else:
+            sys.stderr.write(f" {mark}\n")
+    sys.stderr.flush()
 
 
 if __name__ == "__main__":

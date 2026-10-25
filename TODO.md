@@ -23,6 +23,12 @@ unmeasured today; nothing here is speculative.
       log), local API (`codecrew serve`), per-file trust badges, USAGE.md
       from the spec, CI export, `codecrew` console script
 - [x] Verdict discloses an auto-approved spec with open assumptions
+- [x] **Production readiness**: verify a developer's own repository (src
+      layout, declared dependencies in a cached isolated env,
+      `[tool.codecrew]`, quick/full profiles, `--strict`, SARIF), mutation
+      testing on a scratch copy, `codecrew init`, pre-commit hooks, a
+      release wheel that carries the UI, and a project-centred web UI with
+      history, trends, findings and fix prompts
 
 ## Measurement (results that are still missing)
 
@@ -30,21 +36,25 @@ unmeasured today; nothing here is speculative.
       token quota) and record both outcomes in the README
 - [ ] Run `--mode project --tasks wordstats` against a live model; Phase 4 has
       only been verified with scripted models
-- [ ] Repeat each condition 3-5 times: one run per task cannot rank anything
-      (`sql_builder` passed and failed its hidden tests across identical runs)
-- [ ] Add harder tasks: single and multi both reach 10/10 hidden, so the suite
-      cannot separate them on correctness
+- [x] **Phase 6 harness**: `codecrew eval`, resumable across quota resets,
+      architecture x judge ablation, Wilson intervals, exact McNemar
+- [x] Four harder tasks (semver, csv_line, expr_eval, token_bucket), each
+      validated against a reference and a known-wrong answer
+- [ ] Complete the live study: all 14 tasks x 3 conditions x 3 reps
+      (`codecrew eval --name main --reps 3`, resumes where it stopped)
 - [ ] Live-run a non-Groq provider (Gemini or Ollama); only request shapes
       are tested offline
 
 ## Benchmark integrity
 
-- [ ] `intervals`: the hidden test requires list intervals to be accepted but
-      the requirement never says so. Amend the requirement (disclosed) and
-      re-run only that task under every condition
+- [x] `intervals`: requirement amended to say lists are accepted (disclosed
+      in README); its earlier results are not comparable
 
 ## Product (after Phase 5)
 
+- [ ] Languages other than Python
+- [ ] Generate a module *into* an existing repository (AI builds go to their
+      own workspace today)
 - [ ] The exported CI workflow has not yet run on GitHub Actions itself;
       run it once on a real repository and record the result
 - [ ] Jobs live in server memory; a restart loses in-flight jobs (finished
@@ -56,8 +66,8 @@ unmeasured today; nothing here is speculative.
 
 - [ ] The Docker sandbox backend has never been executed on this machine
       (no Docker installed); verify it end to end on a machine that has it
-- [ ] Install declared third-party dependencies into the sandbox so a project
-      that really needs one can run its tests (G8 vets them, nothing installs)
+- [ ] The Docker backend does not install project dependencies yet (the
+      local backend does)
 - [ ] A separately authored cross-module integration suite for project mode
 - [ ] Unit tests for the interactive approvers (`_interactive_approver`,
       `_interactive_plan_approver`); they are exercised only by hand
@@ -69,4 +79,8 @@ unmeasured today; nothing here is speculative.
 ## Owner actions (not for the agent)
 
 - [ ] Rotate the Groq API key that was pasted into a chat transcript
-- [ ] Push `chore/auto-commit-workflow` and open a PR into `main`
+- [ ] Merge the open branches into `main` (feat/phase5-product, then
+      feat/production-ready), so installs from GitHub get this code
+- [ ] Push `ci/github-workflows` with a token that has the `workflow` scope
+      (CI and release workflows), then tag `v0.2.0` to publish a wheel
+- [ ] Choose a license; none is declared

@@ -28,7 +28,7 @@ SPEC = {
                    "examples": [{"call": "clamp(5, 0, 10)", "result": "5"}]}],
     "assumptions": ["bounds are inclusive"],
 }
-REPLAYS = Path(__file__).resolve().parents[1] / "samples" / "replays"
+REPLAYS = Path(__file__).resolve().parents[1] / "codecrew" / "replays"
 
 
 def approving_runner(job, manager):
@@ -134,7 +134,7 @@ def test_writes_must_be_json(server):
 def test_verify_outside_the_roots_is_refused(server, tmp_path):
     status, _, data = request(server, "POST", "/api/jobs",
                               {"kind": "verify", "workspace": str(tmp_path)})
-    assert status == 403 and "outside" in data["error"]
+    assert status == 403 and "not a registered project" in data["error"]
 
 
 def test_scripted_runs_only_replay_bundled_files(server):

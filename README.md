@@ -4,6 +4,79 @@ A multi-agent AI system for collaborative software development — built as a
 **verification pipeline that happens to use AI to write the code**, rather than
 a prompt chain that trusts its own output.
 
+## Use it on your code
+
+CodeCrew checks a Python project the way a careful reviewer would want it
+checked, and gives a verdict no AI gets to decide: **VERIFIED**,
+**PARTIALLY VERIFIED** (something blocking could not run) or **UNVERIFIED**
+(something blocking failed). Checking your own code needs no AI model and
+no API key.
+
+```bash
+pip install "codecrew @ git+https://github.com/ROOKIEEE12/Code_Crew_v2.git"
+cd my-project
+codecrew init --ci --pre-commit      # config, .gitignore, CI workflow, pre-commit hook
+codecrew verify . --profile quick    # fast: everything except mutation testing
+codecrew verify .                    # every gate
+codecrew serve                       # the web UI on http://127.0.0.1:8765
+```
+
+The web UI ships inside release wheels (built by the release workflow). From
+a git checkout, build it once with `cd web && npm ci && npm run build`
+(Node 20+); the API and CLI work without it.
+
+What a check runs, in order, each a real tool rather than a model:
+
+| Gate | What it answers |
+|---|---|
+| G1 syntax, lint, types | Does it compile, are names defined, do types line up? (ruff, mypy) |
+| G8 dependencies | Is every import a declared, existing package, without known vulnerabilities? |
+| G7 spec conformance | Do the spec's examples hold? (AI builds only) |
+| G2 tests | Do the project's tests pass? |
+| G3 branch coverage | Did the tests reach every branch? |
+| G5 security | bandit and detect-secrets |
+| G4 mutation score | If a bug were introduced, would the tests notice? |
+| G6 property tests | Are edge cases explored beyond hand-picked inputs? (advisory) |
+
+Day to day:
+
+- **Your repository as it is.** src layouts, `pyproject.toml` /
+  `requirements*.txt` dependencies (installed once into a cached, isolated
+  environment under `~/.codecrew/envs`, never into your repo), and
+  `[tool.codecrew]` settings for thresholds, excludes and the profile.
+- **Your files are never modified.** Mutation testing runs on a scratch copy.
+- **Fast while you work, thorough before you merge.** `--profile quick` skips
+  mutation testing (and so can never say VERIFIED); `--strict` exits non-zero
+  unless the verdict is VERIFIED.
+- **Where you already look.** `--sarif` for VS Code and GitHub code
+  scanning, `--json`, `--markdown` for CI job summaries, a pre-commit hook
+  (`codecrew-quick`), and `codecrew ci-export` for GitHub Actions.
+- **The web UI.** Add a project folder, then Quick or Full check. Each
+  project has its verdict history and coverage/mutation trends, findings
+  grouped by file with the code around each, per-file trust badges, and
+  **Copy fix prompt**, which turns the findings into a prompt for whichever
+  AI assistant you use (built from the report, not by a model).
+
+Configuration (all optional), in `pyproject.toml`:
+
+```toml
+[tool.codecrew]
+profile = "full"                 # or "quick"
+min-coverage = 70                # branch coverage, percent
+min-mutation = 50                # mutation score, percent
+max-mutants = 40
+exclude = ["migrations/*"]
+disable = []                     # gate ids, e.g. ["G6"] (they show as not run)
+non-blocking = []                # gates that report but never block
+install-dependencies = "auto"    # auto | true | false
+test-timeout = 60                # seconds per test
+```
+
+Exit codes: `0` passed (VERIFIED or PARTIALLY VERIFIED; with `--strict`, only
+VERIFIED), `1` not passed, `2` a usage or configuration error.
+
+The rest of this README is how the system is built and what was measured.
+
 ## The problem this exists to solve
 
 A single-agent coding assistant generates code and stops. The obvious fix —
@@ -36,14 +109,19 @@ Three structural consequences:
 3. **Every gate re-runs after every patch**, never just the one that failed —
    directly because of the iterative-security-degradation finding above.
 
-## Status: Phases 0 and 1 complete
+## Status: all six phases built; the live evaluation is partial
 
 - **Phase 0** — the gate layer, runnable standalone with no LLM and no API key.
   This ordering is deliberate: the judge is built and validated before
   anything is judged.
 - **Phase 1** — the free-tier LLM layer, typed agent contracts, and the
-  single-agent baseline wired to the gates. This is the baseline that the
-  multi-agent architecture must beat.
+  single-agent baseline wired to the gates.
+- **Phase 2-4** — independent spec / implementer / test-author agents with
+  enforced isolation, the reconciliation loop, multi-module projects.
+- **Phase 5** — the web UI, per-file trust badges, CI export, the local API.
+- **Phase 6** — the evaluation harness and the four-way ablation. How much of
+  the study has actually run against a live model is stated in its section,
+  because a free-tier daily quota decides that, not the code.
 
 **No paid API is required at any point.** Providers are interchangeable and
 free tiers are the default: Groq, Gemini, local Ollama, or the fully offline
@@ -65,7 +143,7 @@ python -m codecrew.gates run samples/strength_vibe    # -> UNVERIFIED, exit 1
 # Generate and verify, fully offline via a replay file
 python -m codecrew build "Build an in-memory URL shortener" \
   --out /tmp/shortener --provider scripted \
-  --script samples/replays/url_shortener.json --clean
+  --script codecrew/replays/url_shortener.json --clean
 
 # Generate and verify with a real free-tier model
 export GROQ_API_KEY=...      # or GEMINI_API_KEY, or run Ollama
@@ -104,11 +182,23 @@ whose dependency failed reports `SKIP — blocked by G1` instead of running
 against code that cannot compile, but independent gates still run, so one
 failure never hides every other problem.
 
-### Three policy decisions worth defending in a viva
+### Policy decisions worth defending in a viva
 
-- **`SKIP` is never a pass.** A missing tool downgrades the verdict to
-  `PARTIALLY VERIFIED` and is listed under "what was not verified". Silent
-  green on an unrun check is the exact failure mode this project targets.
+- **`SKIP` is never a pass.** A blocking gate that did not run downgrades the
+  verdict to `PARTIALLY VERIFIED` and is listed under "what was not
+  verified". Silent green on an unrun check is the exact failure mode this
+  project targets.
+- **Advisory gates never decide the verdict, either way.** Changed in the
+  production-readiness work: G6 (property tests) is advisory, so its FAIL
+  never blocked; until then its *absence* still lowered the verdict, which
+  made nearly every real project (few use Hypothesis) permanently "partial"
+  and taught people to ignore the verdict. Now only blocking gates count;
+  advisory skips are still listed. A *disabled* blocking gate (the quick
+  profile's G4) still lowers the verdict. Benchmark false-confidence numbers
+  are unaffected: they use `report.passed`, which did not change.
+- **Environment problems are not code verdicts.** Missing type stubs for a
+  third-party package are a note, not a G1 failure; tests that cannot import
+  a declared-but-uninstalled dependency are an `ERROR`, not a test `FAIL`.
 - **Code with no tests FAILs.** It is not "nothing to check" — it is the output
   the project exists to prevent.
 - **A crashed gate is `ERROR`, not `FAIL`.** A bug in CodeCrew must never be
@@ -523,6 +613,73 @@ server; it is a local tool. Jobs live in memory (finished workspaces stay on
 disk and are listed after a restart). The UI was checked by rendering it in
 headless Edge at desktop and narrow widths, not by a user study.
 
+## Phase 6: evaluation and the four-way ablation
+
+`codecrew eval` runs the study the project's claims rest on. Two factors,
+each isolating one claim:
+
+| Factor | Levels | Claim it tests |
+|---|---|---|
+| **Architecture** (what writes code and tests) | `single`, `multi`, `multi_repair` | independent tests and the repair loop produce more correct code |
+| **Judge** (what decides "done") | `full` (every blocking gate), `own_tests` (it compiles and its own tests pass) | deep gates catch wrong code that a "tests pass" check ships |
+
+`single`/`multi` crossed with the two judges is the four-way ablation, with
+`multi_repair` reported alongside. Both judges are applied to **the same
+runs**, so the judge comparison costs no extra model calls and carries no
+generation noise: any difference is the judge's alone. The headline metric
+stays **false confidence**: claimed done, but hidden tests the pipeline
+never saw fail.
+
+**Harder tasks.** Both architectures reached 10/10 on the original suite, so
+it could not separate them. Four tasks were added
+(`codecrew/bench/hard_tasks.py`), each chosen for a rule that is easy to
+state and easy to get subtly wrong: SemVer 2.0.0 precedence, RFC 4180
+quoting, an expression evaluator written without `eval` (enforced by the
+hidden tests), and a token-bucket rate limiter on an injected clock. Each
+ships a reference solution that passes its hidden tests, and a plausible
+wrong answer that must fail them (`tests/test_bench.py`). They are kept out
+of the default `bench` suite so every earlier number stays comparable.
+
+**Benchmark change, disclosed.** The `intervals` requirement now says that
+an interval may be given as a list as well as a tuple. Its hidden test
+already required that, and the requirement was silent, which made the one
+earlier `intervals` FALSE_CONFIDENCE a benchmark defect rather than a
+pipeline one. Results for `intervals` before this change are not comparable
+with results after it.
+
+**Built for a free tier.** Every finished cell is written immediately; a
+quota error stops the study cleanly and leaves the cell pending, and the
+same command resumes. Cells run repetition-major, so a partial study is
+balanced across conditions. A study records a fingerprint of every
+requirement and hidden test and refuses to mix results from a different
+benchmark revision. Rates carry 95% Wilson intervals, and architectures are
+compared on hidden-test passes with an exact McNemar test over paired
+(task, repetition) runs.
+
+```bash
+codecrew eval --name main --reps 3          # resumable; re-run to continue
+codecrew eval --name main --report          # Markdown report + summary.json
+```
+
+**Where the live study stands (stated plainly):** it has not produced
+results yet. Running it surfaced harness problems that would have been
+recorded as findings about the architectures if they had not been
+inspected, and each was fixed rather than counted:
+
+- a reasoning model (`gpt-oss-20b`) spent its whole token budget thinking
+  and returned nothing, which agents recorded as "failed to build"; the
+  client now retries an empty, cut-off answer with a larger budget and
+  remembers the budget a model needs;
+- a cell interrupted mid-run left a folder that a sync client kept locked,
+  which crashed the next invocation; such leftovers are now stepped around.
+
+The cells produced by those bugs were deleted from the local study so they
+are re-run, not counted. One valid cell exists (`single`, `semver`: the
+gates rejected code whose hidden tests passed, a false alarm). The study
+(`hard-gptoss20b`: 4 hard tasks x 3 conditions x 3 reps on Groq's free
+`openai/gpt-oss-20b`) resumes with the same command once the daily quota
+resets. No claim about the architectures is made until it completes.
+
 ## Layout
 
 ```
@@ -537,8 +694,13 @@ codecrew/
   badges.py          per-file trust badges and the review caveat
   docs.py            USAGE.md, rendered from the spec (no model)
   ci_export.py       GitHub Actions workflow for the gates
-  __main__.py        CLI: doctor | build | verify | bench | compare | eval | ci-export | serve
-  server/            local HTTP API: jobs, approvals, live progress
+  project.py         a developer's repository: layout, dependencies, [tool.codecrew]
+  toml.py            TOML reader (tomllib on 3.11+, a small parser on 3.10)
+  sarif.py           SARIF 2.1.0 output for editors and code scanning
+  init.py            `codecrew init`
+  replays/           recorded model answers for the offline demo
+  __main__.py        CLI: doctor | init | verify | build | serve | ci-export | bench | compare | eval
+  server/            local HTTP API: jobs, approvals, projects, run history
   bench/             tasks with hidden tests, runner, ablation study
   sandbox/           base contract, docker backend, local-venv backend
   llm/
@@ -559,7 +721,6 @@ web/                 Next.js UI (static export, served by `codecrew serve`)
 samples/
   strength_good/     reference workspace: should pass
   strength_vibe/     unverified-AI-output workspace: should fail
-  replays/           canned responses for offline demos
 tests/               CodeCrew's own suite
 ```
 
@@ -578,7 +739,7 @@ only assert a gate outcome by citing one of those files.
 | 3 | Reconciliation loop: classify a failure as code / test / spec defect against the spec, patch the right artefact, full gate re-run per patch | **built and tested offline; live measurement partial** (Groq daily quota) |
 | 4 | Architect, multi-module projects, dependency sanity gate | **built and tested offline; not yet measured live** |
 | 5 | Web UI (Next.js instead of the planned Streamlit), per-file trust badges, CI export, usage guide, local API | **done** |
-| 6 | Full evaluation + four-way ablation study | |
+| 6 | Evaluation harness + four-way ablation (architecture x judge), harder tasks | **harness built and tested; live study partial** (see Phase 6) |
 
 The LLM layer is provider-agnostic with free tiers as the default (Groq,
 Gemini, or local Ollama), so no phase requires paid API access.
@@ -601,6 +762,15 @@ verification:
 - **Only Groq has been run live.** Gemini and Ollama payloads and response
   parsing are asserted offline; no real Gemini or Ollama endpoint has been
   called.
+- **Python only.** The gates understand Python projects; other languages are
+  not checked.
+- **The first check of a project needs the internet** to install its declared
+  dependencies (cached afterwards). Offline, tests that import them are
+  reported as an environment ERROR rather than a result.
+- **The Docker backend is unverified** on real hardware and does not install
+  project dependencies; `auto` falls back to the local backend without Docker.
+- **The UI is a local, single-user tool.** No accounts; in-flight jobs are
+  lost on restart (finished runs stay in each project's history).
 - **Small samples.** Every measured number in this README comes from one run
   per task on a handful of tasks, under a free-tier daily token quota. See
   the evaluation section for what that does and does not support.

@@ -47,10 +47,15 @@ class GateRunner:
         config: GateConfig | None = None,
         sandbox: Sandbox | None = None,
         progress: Callable[[dict], None] | None = None,
+        project=None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.config = config or GateConfig()
         self._sandbox = sandbox
+        #: codecrew.project.Project: layout and exclusions. Its *settings*
+        #: are folded into the config by the caller (see project.load_config),
+        #: never silently here.
+        self.project = project
         #: Told when each gate starts and finishes. Purely an observer: it
         #: receives copies of the outcome and cannot change it.
         self._progress = progress
@@ -67,13 +72,35 @@ class GateRunner:
         run_id = run_id or time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         started = time.monotonic()
 
-        sandbox = self._sandbox or get_sandbox(self.workspace, self.config.sandbox)
+        project = self.project
+        if project is None:
+            from ..project import Project, ProjectConfigError
+            try:
+                project = Project.detect(self.workspace)
+            except ProjectConfigError:
+                project = None  # layout still falls back to the defaults
+        sandbox = self._sandbox or get_sandbox(self.workspace, self.config.sandbox,
+                                               project=project)
+        self._notify(phase="setup", gate="", name="preparing the environment")
         sandbox.ensure()
 
         evidence_dir = self.workspace / WORK_DIR_NAME / "evidence" / run_id
-        ctx = GateContext.build(self.workspace, sandbox, self.config, evidence_dir)
+        ctx = GateContext.build(self.workspace, sandbox, self.config, evidence_dir,
+                                project=project)
         report = GateReport(run_id=run_id, workspace=str(self.workspace),
                             sandbox=sandbox.name)
+        report.sources = [p.as_posix() for p in ctx.source_files]
+        if getattr(sandbox, "environment_note", ""):
+            report.notes.append(sandbox.environment_note)
+        if project is not None:
+            if project.source_root:
+                report.notes.append(f"src layout: code under {project.source_root}/")
+            if project.settings_file:
+                report.notes.append(f"configuration: {project.settings_file}")
+            report.notes += project.warnings
+        if self.config.disabled:
+            report.notes.append(
+                "disabled in configuration: " + ", ".join(self.config.disabled))
 
         statuses: dict[str, Status] = {}
         for gate_cls in GATE_CLASSES:
@@ -111,9 +138,11 @@ def _unmet_dependency(gate: Gate, statuses: dict[str, Status]) -> str | None:
 
 
 def _disabled(gate: Gate, config: GateConfig) -> GateResult:
+    # ``blocking`` records what the gate *would* have been: a blocking gate
+    # that did not run leaves the verdict partial; a SKIP can never block.
     return GateResult(
         gate_id=gate.gate_id, name=gate.name, status=Status.SKIP,
-        summary="not run", blocking=False,
+        summary="not run", blocking=config.is_blocking(gate.gate_id, gate.blocking),
         note="disabled in configuration",
     )
 
@@ -121,6 +150,6 @@ def _disabled(gate: Gate, config: GateConfig) -> GateResult:
 def _blocked(gate: Gate, config: GateConfig, blocker: str) -> GateResult:
     return GateResult(
         gate_id=gate.gate_id, name=gate.name, status=Status.SKIP,
-        summary="not run", blocking=False,
+        summary="not run", blocking=config.is_blocking(gate.gate_id, gate.blocking),
         note=f"blocked by {blocker}",
     )

@@ -73,8 +73,15 @@ checks, and never force-pushes. Disable it with
 ## Project rules that are easy to break
 
 - **The gate layer is LLM-free.** Never call a model from `codecrew/gates/`.
-- **A skipped gate is never a pass.** `SKIP` downgrades the verdict; "does
-  not apply" (`Gate.applicable`) is the only way to leave a gate out.
+- **A skipped gate is never a pass.** A skipped *blocking* gate downgrades
+  the verdict (disabled ones included); advisory gates never decide it.
+  "Does not apply" (`Gate.applicable`) is the only way to leave a gate out.
+- **Never modify the user's project.** Gates read it; mutation testing works
+  on a scratch copy; dependency environments live in `~/.codecrew/envs`.
+  Model-chosen dependencies of a generated project are not installed
+  unless the user opts in.
+- **Environment problems are not verdicts on code.** Missing stubs or an
+  uninstalled dependency must not read as a code defect.
 - **Isolation is enforced, not conventional.** Agents declare
   `allowed_context`; the Test-Author must never receive implementation code.
   Do not widen an agent's context to make a prompt easier to write.
@@ -101,7 +108,9 @@ checks, and never force-pushes. Disable it with
 single/multi/project builds; `codecrew/repair.py` the reconciliation loop;
 `codecrew/bench/` tasks with hidden tests and the false-confidence metric;
 `codecrew/badges.py`, `docs.py`, `ci_export.py` the Phase 5 surface;
-`codecrew/server/` the local API; `web/` the Next.js UI;
+`codecrew/project.py`, `toml.py`, `sarif.py`, `init.py` real-repository
+support; `codecrew/server/` the local API (`projects.py`: registry and
+history); `web/` the Next.js UI;
 `tests/` the suite; `samples/` one passing and one deliberately bad workspace.
 `README.md` has the measured results and the known limitations; keep it
 honest. `TODO.md` is the task list.

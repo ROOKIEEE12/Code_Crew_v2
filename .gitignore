@@ -18,6 +18,11 @@ venv/
 
 # Benchmark runs: generated code and per-run results.
 bench_runs/
+eval_runs/
+codecrew/server/ui/
+dist/
+build/
+*.egg-info/
 
 # Local state of the auto-commit hook. Never committed.
 .claude/auto-commit.disabled

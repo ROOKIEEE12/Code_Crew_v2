@@ -88,12 +88,12 @@ class Review:
 
 def source_files(workspace: Path) -> list[str]:
     """Workspace-relative POSIX paths of the code under test (not tests)."""
-    from .gates.base import EXCLUDED_DIRS, _is_test
+    from .gates.base import _is_test, is_excluded_part
 
     out = []
     for path in sorted(workspace.rglob("*.py")):
         rel = path.relative_to(workspace)
-        if any(part in EXCLUDED_DIRS for part in rel.parts) or _is_test(rel):
+        if any(is_excluded_part(part) for part in rel.parts) or _is_test(rel):
             continue
         out.append(rel.as_posix())
     return out
@@ -102,7 +102,8 @@ def source_files(workspace: Path) -> list[str]:
 def compute_badges(report: GateReport, workspace: Path,
                    files: list[str] | None = None) -> list[FileBadge]:
     workspace = workspace.resolve()
-    files = source_files(workspace) if files is None else files
+    if files is None:
+        files = list(report.sources) or source_files(workspace)
     badges = {path: FileBadge(path, VERIFIED) for path in files}
 
     def downgrade(path: str, badge: str, reason: str) -> None:
@@ -119,7 +120,12 @@ def compute_badges(report: GateReport, workspace: Path,
     for result in report.results:
         label = f"{result.gate_id} {result.name}"
         if result.status is Status.SKIP:
-            everywhere(PARTIAL, f"{label} did not run ({result.note or 'skipped'})")
+            if result.blocking:
+                everywhere(PARTIAL, f"{label} did not run ({result.note or 'skipped'})")
+            else:
+                for entry in badges.values():
+                    entry.notes.append(
+                        f"{label} (advisory) did not run: {result.note or 'skipped'}")
             continue
 
         located: dict[str, list[str]] = {}
