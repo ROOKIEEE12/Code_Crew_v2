@@ -1,0 +1,5 @@
+repos:
+  - repo: https://github.com/ROOKIEEE12/Code_Crew_v2
+    rev: main  # pin a tag or commit SHA
+    hooks:
+      - id: codecrew-quick

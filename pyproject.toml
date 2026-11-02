@@ -64,3 +64,12 @@ target-version = "py310"
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
+
+[tool.codecrew]
+# What CodeCrew checks before it calls this code verified. Full reference:
+# https://github.com/ROOKIEEE12/Code_Crew_v2#configuration
+profile = "full"              # "quick" skips mutation testing (never VERIFIED)
+min-coverage = 70             # branch coverage, percent
+min-mutation = 50             # share of injected bugs the tests must catch
+exclude = []                  # globs, e.g. ["migrations/*", "scripts/*"]
+install-dependencies = "auto" # install declared deps into an isolated env
