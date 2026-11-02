@@ -680,6 +680,57 @@ gates rejected code whose hidden tests passed, a false alarm). The study
 `openai/gpt-oss-20b`) resumes with the same command once the daily quota
 resets. No claim about the architectures is made until it completes.
 
+### Gate calibration: how accurate is the judge itself?
+
+The ablation measures the pipeline; `codecrew calibrate` measures the gates,
+with no model and no quota. Every case has a known right answer: for each of
+the 14 single-module tasks it checks the reference solution with its hidden
+tests, then wrong code (a surviving mutant of the reference, and the
+hand-written plausible wrong answer where one exists) under two kinds of
+test suite whose every test passes:
+
+- **happy-path**: two passing tests, which is what a hurried author or a
+  model often ships;
+- **near-complete**: every hidden test except the ones that expose the bug,
+  the hardest case for any judge.
+
+The baseline is "it compiles and its tests pass", which is what most AI
+coding tools check; by construction it passes every one of these cases.
+Results (one run, `--mutants 1`; `expr_eval` yielded no usable
+wrong-but-green case):
+
+| Question | CodeCrew gates | "Tests pass" |
+|---|---|---|
+| Correct code + its real tests: passed (no false alarm) | **14/14** (95% CI 78-100%) | 14/14 |
+| Wrong code + happy-path tests: caught | **10/16** (62%, CI 39-82%) | 0/16 |
+| ... of which mutants / hand-written | 10/13 / **0/3** | 0 |
+| Wrong code + near-complete tests: caught | **5/16** (31%, CI 14-56%) | 0/16 |
+| ... of which mutants / hand-written | 5/13 / **0/3** | 0 |
+
+Read plainly:
+
+- **No false alarms** on correct, well-tested code.
+- Against thin tests the gates do real work: G3 (coverage) and G4 (mutation
+  score) reject 10 of 16 wrong programs that a "tests pass" check ships.
+  9 of the 10 mutant catches hold without G4, so the result is not an
+  artefact of judging mutants with mutation testing.
+- Against near-complete tests, every one of the 5 catches coincides with the
+  same tests being flagged on the *correct* code too: the gates rejected the
+  test suite as too weak, not the bug as a bug. The verdict is still right
+  (the code was not verified), but it is not bug detection.
+- **Hand-written wrong answers were caught 0 of 6 times.** These are the
+  realistic bugs (wrong SemVer pre-release ordering, a quoting rule, a
+  refill off-by-one) and they survive because the gates measure the code
+  against its tests, not against the requirement. Only a test written from
+  the spec catches them, which is why the build pipeline has an independent
+  Test-Author that never sees the implementation, and why `codecrew verify`
+  on someone else's code is only as strong as that code's tests.
+
+```bash
+codecrew calibrate --out calibration_runs/main --mutants 1   # offline, no model
+codecrew calibrate --out calibration_runs/main --report      # re-render
+```
+
 ## Layout
 
 ```
@@ -762,6 +813,10 @@ verification:
 - **Only Groq has been run live.** Gemini and Ollama payloads and response
   parsing are asserted offline; no real Gemini or Ollama endpoint has been
   called.
+- **Gates cannot see a wrong requirement.** `verify` checks code against its
+  own tests. A bug that no test exercises is caught only if the tests are
+  thin enough for G3/G4 to object; in calibration, hand-written plausible
+  bugs under passing tests were caught 0 of 6 times.
 - **Python only.** The gates understand Python projects; other languages are
   not checked.
 - **The first check of a project needs the internet** to install its declared
