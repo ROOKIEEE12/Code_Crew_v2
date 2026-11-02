@@ -13,7 +13,8 @@ export type Verdict =
   | "PARTIALLY VERIFIED"
   | "UNVERIFIED"
   | "FAILED TO BUILD"
-  | "NOT VERIFIED";
+  | "NOT VERIFIED"
+  | "NOT CHECKED";
 
 export type GateStatus = "PASS" | "FAIL" | "SKIP" | "ERROR";
 
@@ -47,6 +48,9 @@ export interface GateReport {
   passed: boolean;
   verdict: Verdict;
   counts: Record<GateStatus, number>;
+  notes?: string[];
+  /** False when there was no code to check (no Python source files). */
+  checked?: boolean;
 }
 
 export interface FileBadge {

@@ -331,3 +331,26 @@ def test_a_src_layout_is_put_on_the_import_path(repo: Path):
     assert box._env()["PYTHONPATH"] == str(repo.resolve() / "src")
     clone = box.for_workspace(repo / "copy")
     assert clone._env()["PYTHONPATH"] == str((repo / "copy").resolve() / "src")
+
+
+# -- a folder with no Python code ------------------------------------------------------
+
+def test_a_folder_without_python_is_not_checked_and_does_not_pass(tmp_path: Path):
+    """Found live: a Next.js portfolio read as PARTIALLY VERIFIED and passed."""
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "app.tsx").write_text("export default 1;\n", encoding="utf-8")
+    report = GateRunner(tmp_path, GateConfig(), sandbox=_Stub(tmp_path)).run()
+    assert report.verdict() == "NOT CHECKED"
+    assert report.passed is False
+    assert "JavaScript/TypeScript" in report.notes[-1]
+    assert "Python code only" in report.notes[-1]
+    rebuilt = GateReport.from_dict({**report.to_dict(), "verdict": report.verdict()})
+    assert rebuilt.verdict() == "NOT CHECKED"
+
+
+def test_cli_exits_non_zero_when_nothing_was_checked(tmp_path: Path, capsys):
+    from codecrew.gates.__main__ import main as gates_main
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    assert gates_main(["run", str(tmp_path), "--sandbox", "local"]) == 1
+    out = capsys.readouterr().out
+    assert "VERDICT   : NOT CHECKED" in out and "Python code only" in out

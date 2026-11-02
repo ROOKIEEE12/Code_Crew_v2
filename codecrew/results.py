@@ -112,16 +112,19 @@ class GateReport:
     #: Facts about how the run was set up: the execution environment, where
     #: the configuration came from, the profile. Context, never verdicts.
     notes: list[str] = field(default_factory=list)
+    #: False when there was no code to check at all (no Python source files).
+    #: Such a run is never a pass: "nothing failed" is not "it works".
+    checked: bool = True
 
     @property
     def passed(self) -> bool:
-        """A run passes only if nothing blocking failed.
+        """A run passes only if something was checked and nothing blocking failed.
 
         Note that SKIP never counts as a pass; it is surfaced separately as
         "not verified" so the final report can be honest about coverage of
         the verification itself.
         """
-        return not any(r.blocked for r in self.results)
+        return self.checked and not any(r.blocked for r in self.results)
 
     @property
     def skipped(self) -> list[GateResult]:
@@ -146,6 +149,8 @@ class GateReport:
 
     def verdict(self) -> str:
         """Trust badge for the workspace as a whole."""
+        if not self.checked:
+            return "NOT CHECKED"
         if not self.passed:
             return "UNVERIFIED"
         if self.unverified:
@@ -175,7 +180,8 @@ class GateReport:
                    sandbox=data.get("sandbox", ""), results=results,
                    duration_s=data.get("duration_s", 0.0),
                    sources=list(data.get("sources", [])),
-                   notes=list(data.get("notes", [])))
+                   notes=list(data.get("notes", [])),
+                   checked=bool(data.get("checked", True)))
 
     def write_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

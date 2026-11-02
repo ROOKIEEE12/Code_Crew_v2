@@ -144,7 +144,11 @@ export function ProjectView() {
               </Link>
             </p>
           ) : null}
-          <VerdictBanner verdict={report.verdict} note={detail.verdict_note} />
+          <VerdictBanner
+            verdict={report.verdict}
+            note={detail.verdict_note}
+            detail={report.checked === false ? report.notes?.at(-1) : null}
+          />
 
           <div role="tablist" aria-label="Project sections" className="flex flex-wrap gap-1 border-b border-line">
             {tabs.map((t) => (

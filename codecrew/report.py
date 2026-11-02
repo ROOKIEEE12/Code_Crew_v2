@@ -35,6 +35,8 @@ def render(report: GateReport, *, show_findings: bool = True,
         f"duration  : {report.duration_s:.1f}s",
         "",
         f"VERDICT   : {report.verdict()}",
+        *([f"            {note}" for note in report.notes[-1:]]
+          if not report.checked else []),
         "",
         "-" * _WIDTH,
         "GATES",

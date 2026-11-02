@@ -25,6 +25,7 @@ export function toneOf(value: string | null | undefined): Tone {
     case "done":
       return "ok";
     case "PARTIALLY VERIFIED":
+    case "NOT CHECKED":
     case "SKIP":
     case "awaiting_approval":
       return "warn";
@@ -77,16 +78,20 @@ const EXPLAIN: Record<string, string> = {
   UNVERIFIED: "A blocking gate failed. Do not ship this without reading the findings.",
   "FAILED TO BUILD": "No code was produced, so there is nothing to verify.",
   "NOT VERIFIED": "The gates have not run on this workspace.",
+  "NOT CHECKED": "There was no code CodeCrew can check here, so nothing was verified.",
 };
 
 export function VerdictBanner({
   verdict,
   note,
   initial,
+  detail,
 }: {
   verdict: string;
   note?: string | null;
   initial?: string | null;
+  /** Why nothing was checked, from the report's notes. */
+  detail?: string | null;
 }) {
   const tone = toneOf(verdict);
   const border = { ok: "border-ok", warn: "border-warn", bad: "border-bad", muted: "border-line", accent: "border-accent" }[tone];
@@ -102,6 +107,7 @@ export function VerdictBanner({
         ) : null}
       </div>
       <p className="mt-1 text-sm text-muted">{EXPLAIN[verdict] ?? ""}</p>
+      {detail ? <p className="mt-3 rounded-md bg-warn-soft px-3 py-2 text-sm text-warn">{detail}</p> : null}
       {note ? (
         <p className="mt-3 rounded-md bg-warn-soft px-3 py-2 text-sm text-warn">
           <strong>{verdict} {note}.</strong> The gates check the code against the spec; nobody checked

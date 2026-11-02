@@ -90,6 +90,12 @@ class GateRunner:
         report = GateReport(run_id=run_id, workspace=str(self.workspace),
                             sandbox=sandbox.name)
         report.sources = [p.as_posix() for p in ctx.source_files]
+        if not ctx.source_files:
+            # Nothing to judge. Say what the folder looks like instead, so a
+            # person who pointed CodeCrew at the wrong kind of project knows
+            # why, rather than reading eight "skipped" gates.
+            report.checked = False
+            report.notes.append(_nothing_to_check(self.workspace))
         if getattr(sandbox, "environment_note", ""):
             report.notes.append(sandbox.environment_note)
         if project is not None:
@@ -127,6 +133,26 @@ class GateRunner:
 
         report.duration_s = time.monotonic() - started
         return report
+
+
+#: Marker file -> what kind of project it suggests.
+_OTHER_LANGUAGES = (
+    ("package.json", "a JavaScript/TypeScript project"),
+    ("go.mod", "a Go project"),
+    ("Cargo.toml", "a Rust project"),
+    ("pom.xml", "a Java project"),
+    ("build.gradle", "a Java/Kotlin project"),
+    ("composer.json", "a PHP project"),
+    ("Gemfile", "a Ruby project"),
+)
+
+
+def _nothing_to_check(workspace: Path) -> str:
+    kind = next((what for marker, what in _OTHER_LANGUAGES
+                 if (workspace / marker).exists()), None)
+    found = f"This looks like {kind}. " if kind else ""
+    return (f"No Python source files were found, so nothing was checked. {found}"
+            "CodeCrew currently verifies Python code only.")
 
 
 def _unmet_dependency(gate: Gate, statuses: dict[str, Status]) -> str | None:

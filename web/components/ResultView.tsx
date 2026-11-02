@@ -35,7 +35,12 @@ export function ResultView({
 
   return (
     <div className="space-y-4">
-      <VerdictBanner verdict={result.verdict} note={result.verdict_note} initial={result.initial_verdict} />
+      <VerdictBanner
+        verdict={result.verdict}
+        note={result.verdict_note}
+        initial={result.initial_verdict}
+        detail={result.report?.checked === false ? result.report.notes?.at(-1) : null}
+      />
 
       {result.failure ? (
         <div className="card border-bad/40 bg-bad-soft p-4 text-sm text-bad">
