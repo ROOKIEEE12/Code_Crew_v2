@@ -564,3 +564,43 @@ class TokenBucket:
 ''',
     ),
 )
+
+
+#: Plausible wrong answers, one per hard task: the mistakes the tasks were
+#: chosen for. The hidden tests must reject each (tests/test_bench.py), and
+#: the calibration study uses them as bugs written independently of the
+#: mutation engine, so G4 cannot have been tuned to them.
+KNOWN_WRONG: dict[str, tuple[str, str]] = {
+    "semver": ("semver_compare", '''
+def compare_versions(a, b):
+    key = lambda v: v.split("+")[0]
+    return (key(a) > key(b)) - (key(a) < key(b))
+'''),
+    "csv_line": ("csv_line", '''
+def parse_csv_line(line):
+    return line.split(",")
+'''),
+    "expr_eval": ("expr_eval", '''
+def evaluate(expression):
+    import ast
+    return eval(compile(ast.parse(expression, mode="eval"), "<e>", "eval"))
+'''),
+    "token_bucket": ("token_bucket", '''
+import time
+class TokenBucket:
+    def __init__(self, rate, capacity, clock=time.monotonic):
+        if rate <= 0 or capacity <= 0:
+            raise ValueError
+        self.rate, self.capacity, self.clock = rate, capacity, clock
+        self.tokens = capacity
+        self.last = clock()
+    def allow(self, cost=1):
+        now = self.clock()
+        self.tokens += (now - self.last) * self.rate
+        self.last = now
+        if self.tokens >= cost:
+            self.tokens -= cost
+            return True
+        return False
+'''),
+}

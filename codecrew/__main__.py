@@ -199,6 +199,18 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--report", action="store_true",
                     help="do not run anything; write and print the report")
 
+    cal = sub.add_parser(
+        "calibrate",
+        help="measure the gates' own accuracy on known-correct and known-wrong code "
+             "(offline, no model)")
+    cal.add_argument("--out", type=Path, default=Path("calibration_runs"))
+    cal.add_argument("--tasks", default=None,
+                     help="comma-separated task ids (default: all 14 single-module)")
+    cal.add_argument("--mutants", type=int, default=2,
+                     help="mutation bugs per task (default 2)")
+    cal.add_argument("--report", action="store_true",
+                     help="do not run; summarise the results already in --out")
+
     compare = sub.add_parser(
         "compare", help="compare two benchmark results.json files side by side")
     compare.add_argument("baseline", type=Path)
@@ -483,6 +495,38 @@ def _eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _calibrate(args: argparse.Namespace) -> int:
+    import json
+
+    from .bench.calibration import load, render_markdown, run_calibration, summarize
+    from .bench.hard_tasks import HARD_TASKS, KNOWN_WRONG
+    from .bench.tasks import TASKS, get_tasks
+
+    out = args.out.resolve()
+    if args.report:
+        if not (out / "results.json").exists():
+            print(f"error: no calibration results in {out}", file=sys.stderr)
+            return 2
+        results = load(out)
+    else:
+        try:
+            tasks = (get_tasks([t.strip() for t in args.tasks.split(",") if t.strip()])
+                     if args.tasks else [*TASKS, *HARD_TASKS])
+        except KeyError as exc:
+            print(f"error: {exc.args[0]}", file=sys.stderr)
+            return 2
+        tasks = [t for t in tasks if not t.reference_files]  # single-module only
+        results = run_calibration(tasks, out, mutants_per_task=args.mutants,
+                                  wrong_answers=KNOWN_WRONG)
+    summary = summarize(results)
+    text = render_markdown(summary)
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (out / "report.md").write_text(text, encoding="utf-8")
+    print("\n" + text)
+    print(f"written: {out / 'report.md'}")
+    return 0
+
+
 def _verify(args: argparse.Namespace) -> int:
     from .gates.__main__ import main as gates_main
 
@@ -559,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
         return _verify(args)
     if args.command == "eval":
         return _eval(args)
+    if args.command == "calibrate":
+        return _calibrate(args)
     if args.command == "ci-export":
         return _ci_export(args)
     if args.command == "init":

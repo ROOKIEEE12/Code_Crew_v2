@@ -31,3 +31,4 @@ build/
 .claude/hooks/.check.out
 .claude/hooks/.msg.tmp
 .claude/settings.local.json
+calibration_runs/

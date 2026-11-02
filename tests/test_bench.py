@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from codecrew.bench.hard_tasks import HARD_TASKS
+from codecrew.bench.hard_tasks import HARD_TASKS, KNOWN_WRONG
 from codecrew.bench import (
     BUILD_FAILED,
     CAUGHT,
@@ -96,47 +96,11 @@ def test_hard_tasks_stay_out_of_the_default_suite():
     assert {t.tier for t in HARD_TASKS} == {"hard"}
 
 
-# Known-wrong programs each hard task must reject: the mistakes the tasks
-# were chosen for. A hidden suite that accepts these would not measure them.
-WRONG = {
-    "semver": ("semver_compare", '''
-def compare_versions(a, b):
-    key = lambda v: v.split("+")[0]
-    return (key(a) > key(b)) - (key(a) < key(b))
-'''),
-    "csv_line": ("csv_line", '''
-def parse_csv_line(line):
-    return line.split(",")
-'''),
-    "expr_eval": ("expr_eval", '''
-def evaluate(expression):
-    import ast
-    return eval(compile(ast.parse(expression, mode="eval"), "<e>", "eval"))
-'''),
-    "token_bucket": ("token_bucket", '''
-import time
-class TokenBucket:
-    def __init__(self, rate, capacity, clock=time.monotonic):
-        if rate <= 0 or capacity <= 0:
-            raise ValueError
-        self.rate, self.capacity, self.clock = rate, capacity, clock
-        self.tokens = capacity
-        self.last = clock()
-    def allow(self, cost=1):
-        now = self.clock()
-        self.tokens += (now - self.last) * self.rate
-        self.last = now
-        if self.tokens >= cost:
-            self.tokens -= cost
-            return True
-        return False
-'''),
-}
 
 
 @pytest.mark.parametrize("task", HARD_TASKS, ids=lambda t: t.id)
 def test_hard_tasks_reject_the_plausible_wrong_answer(task, tmp_path: Path):
-    module, source = WRONG[task.id]
+    module, source = KNOWN_WRONG[task.id]
     assert module == task.module
     result = run_hidden(tmp_path, module, source, task.hidden_tests)
     assert result.returncode != 0, "the hidden tests accepted a known-wrong program"
